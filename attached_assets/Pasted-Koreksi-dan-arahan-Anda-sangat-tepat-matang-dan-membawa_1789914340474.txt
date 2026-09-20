@@ -1,0 +1,301 @@
+Koreksi dan arahan Anda **sangat tepat, matang, dan membawa rancangan ini ke level *enterprise-grade LegalTech***. Pemisahan antara **kondisi penerapan** dan **nilai aturan**, konsep **snapshotting** untuk integritas historis, serta penolakan terhadap `eval()` untuk keamanan formula adalah keputusan arsitektural yang sangat krusial. Saya sepenuhnya menyelaraskan diri dengan arahan Anda.
+
+Berikut adalah **revisi skema database** yang telah disesuaikan dengan koreksi Anda, beserta **desain AST (Abstract Syntax Tree) untuk formula** dan **roadmap implementasi Drizzle/PostgreSQL**.
+
+---
+
+### 🏗️ REVISI SKEMA DATABASE (PostgreSQL / Drizzle)
+
+#### 1. Hierarki Sumber Hukum & Pasal (dengan Verifikasi & Standar Teknis)
+
+```typescript
+// legal_sources - Ditambahkan verification_status
+export const legalSources = pgTable('legal_sources', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  regulationCode: varchar('regulation_code', { length: 100 }).notNull().unique(),
+  regulationType: varchar('regulation_type', { length: 50 }).notNull(), // PERPRES, PERLEM, SNI, ISO, dll
+  number: varchar('number', { length: 100 }).notNull(),
+  year: integer('year').notNull(),
+  title: text('title').notNull(),
+  issuingAuthority: varchar('issuing_authority', { length: 255 }).notNull(),
+  authorityLevel: integer('authority_level').notNull(),
+  effectiveDate: date('effective_date').notNull(),
+  expiryDate: date('expiry_date'),
+  isBinding: boolean('is_binding').notNull().default(true),
+  parentSourceId: uuid('parent_source_id').references(() => legalSources.id),
+  status: varchar('status', { length: 20 }).notNull().default('ACTIVE'),
+  // BARU: Status verifikasi hukum
+  verificationStatus: varchar('verification_status', { length: 20 }).notNull().default('UNVERIFIED'), // UNVERIFIED, VERIFIED, REJECTED
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});
+
+// provisions - Ditambahkan source_type untuk standar teknis/lingkungan
+export const provisions = pgTable('provisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  legalSourceId: uuid('legal_source_id').references(() => legalSources.id).notNull(),
+  articleNumber: varchar('article_number', { length: 50 }).notNull(),
+  clauseType: varchar('clause_type', { length: 50 }),
+  provisionType: varchar('provision_type', { length: 50 }).notNull(),
+  rawText: text('raw_text').notNull(),
+  interpretationNote: text('interpretation_note'),
+  // BARU: Membedakan jenis sumber (Regulasi vs Standar Teknis vs Lingkungan)
+  sourceCategory: varchar('source_category', { length: 50 }).notNull().default('REGULATION'), // REGULATION, TECHNICAL_STANDARD, ENVIRONMENTAL, SECTORAL
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+```
+
+#### 2. Aturan, Kondisi Penerapan, serta Override (Pemisahan Kondisi & Nilai)
+
+```typescript
+// business_rules - Ditambahkan formula_ast (bukan string eval)
+export const businessRules = pgTable('business_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  provisionId: uuid('provision_id').references(() => provisions.id).notNull(),
+  ruleKey: varchar('rule_key', { length: 100 }).notNull().unique(),
+  ruleCategory: varchar('rule_category', { length: 50 }).notNull(),
+  // BARU: Nilai default (untuk threshold, string, boolean, dll)
+  defaultValue: jsonb('default_value'), 
+  valueType: varchar('value_type', { length: 20 }).notNull(),
+  // BARU: AST untuk formula (aman, tanpa eval)
+  formulaAst: jsonb('formula_ast'), // Hanya diisi jika ruleCategory = 'FORMULA'
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});
+
+// BARU: rule_conditions - Memisahkan KONDISI penerapan dari NILAI aturan
+export const ruleConditions = pgTable('rule_conditions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  businessRuleId: uuid('business_rule_id').references(() => businessRules.id).notNull(),
+  // Konteks penerapan
+  entityType: varchar('entity_type', { length: 50 }), // BARANG, JASA_KONSULTAN, KONSTRUKSI
+  fundingSource: varchar('funding_source', { length: 50 }), // APBN, APBD, DN, HIBAH
+  procurementMethod: varchar('procurement_method', { length: 50 }), // TENDER, E_PURCHASING, DIRECT
+  packageValueMin: decimal('package_value_min', { precision: 20, scale: 2 }),
+  packageValueMax: decimal('package_value_max', { precision: 20, scale: 2 }),
+  scopeType: varchar('scope_type', { length: 20 }), // NATIONAL, PROVINCE, REGENCY, VILLAGE, BUMN
+  scopeId: uuid('scope_id'),
+  effectiveDate: date('effective_date').notNull(),
+  expiryDate: date('expiry_date'),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
+// rule_overrides - Untuk lex specialis / aturan khusus daerah
+export const ruleOverrides = pgTable('rule_overrides', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  businessRuleId: uuid('business_rule_id').references(() => businessRules.id).notNull(),
+  // Kondisi override
+  scopeType: varchar('scope_type', { length: 20 }).notNull(),
+  scopeId: uuid('scope_id').notNull(),
+  overrideValue: jsonb('override_value'),
+  overrideFormulaAst: jsonb('override_formula_ast'),
+  effectiveDate: date('effective_date').notNull(),
+  expiryDate: date('expiry_date'),
+  justificationSourceId: uuid('justification_source_id').references(() => legalSources.id),
+  // BARU: Prioritas eksplisit untuk resolusi konflik
+  priority: integer('priority').notNull().default(0), // Lebih tinggi = lebih diprioritaskan
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+```
+
+#### 3. Policy Pack dengan Versi & Snapshot
+
+```typescript
+// policy_packs - Ditambahkan versioning dan status publikasi
+export const policyPacks = pgTable('policy_packs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  packName: varchar('pack_name', { length: 255 }).notNull(),
+  regimeType: varchar('regime_type', { length: 50 }).notNull(),
+  description: text('description'),
+  // BARU: Versioning
+  version: varchar('version', { length: 20 }).notNull(), // misal: "1.0.0"
+  status: varchar('status', { length: 20 }).notNull().default('DRAFT'), // DRAFT, REVIEWED, PUBLISHED, RETIRED
+  publishedAt: timestamp('published_at'),
+  publishedBy: uuid('published_by'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  uniqueVersion: unique('policy_pack_version_unique').on('packName', 'version')
+});
+
+// policy_pack_rules - Ditambahkan snapshot untuk integritas historis
+export const policyPackRules = pgTable('policy_pack_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  policyPackId: uuid('policy_pack_id').references(() => policyPacks.id).notNull(),
+  businessRuleId: uuid('business_rule_id').references(() => businessRules.id).notNull(),
+  ruleConditionId: uuid('rule_condition_id').references(() => ruleConditions.id),
+  isMandatory: boolean('is_mandatory').notNull().default(true),
+  // BARU: Snapshot nilai aturan pada saat paket dipublish
+  snapshotValue: jsonb('snapshot_value'), 
+  snapshotFormulaAst: jsonb('snapshot_formula_ast'),
+  snapshotTakenAt: timestamp('snapshot_taken_at').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+```
+
+#### 4. Snapshot Keputusan & Audit Log
+
+```typescript
+// BARU: decision_references - Menyimpan hasil evaluasi pada saat validasi
+export const decisionReferences = pgTable('decision_references', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  entity_type: varchar('entity_type', { length: 100 }).notNull(), // misal: "HPS_DOCUMENT", "TENDER_EVALUATION"
+  entityId: uuid('entity_id').notNull(),
+  policyPackId: uuid('policy_pack_id').references(() => policyPacks.id).notNull(),
+  policyPackVersion: varchar('policy_pack_version', { length: 20 }).notNull(),
+  // Input yang digunakan untuk evaluasi
+  evaluationInput: jsonb('evaluation_input').notNull(),
+  // Hasil evaluasi (aturan mana yang cocok, nilai apa yang dihasilkan)
+  evaluationResult: jsonb('evaluation_result').notNull(),
+  // Aturan-aturan yang dirujuk pada saat keputusan dibuat
+  referencedRuleIds: uuid('referenced_rule_ids').array(),
+  evaluatedAt: timestamp('evaluated_at').defaultNow().notNull(),
+  evaluatedBy: uuid('evaluated_by').notNull()
+});
+
+// audit_logs - Append-only (tidak berubah)
+export const auditLogs = pgTable('audit_logs', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow().notNull(),
+  actorId: uuid('actor_id').notNull(),
+  actorRole: varchar('actor_role', { length: 50 }).notNull(),
+  actionType: varchar('action_type', { length: 20 }).notNull(),
+  entityType: varchar('entity_type', { length: 100 }).notNull(),
+  entityId: uuid('entity_id').notNull(),
+  previousState: jsonb('previous_state'),
+  newState: jsonb('new_state'),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  reason: text('reason'),
+  decisionReferenceId: uuid('decision_reference_id').references(() => decisionReferences.id) // Link ke keputusan
+});
+```
+
+---
+
+### 🧮 DESAIN AST UNTUK FORMULA (Tanpa `eval`)
+
+Untuk rumus TKDN dan preferensi harga, saya mengusulkan struktur AST terbatas yang akan divalidasi ketat oleh backend (menggunakan Zod schema di Drizzle/Node.js).
+
+**Contoh AST untuk Rumus Preferensi Harga:**
+`Harga Evaluasi = Harga Penawaran * (1 - (Persentase Preferensi / 100))`
+
+```json
+{
+  "type": "operator",
+  "operator": "multiply",
+  "operands": [
+    { "type": "reference", "path": "offered_price" },
+    {
+      "type": "operator",
+      "operator": "subtract",
+      "operands": [
+        { "type": "literal", "value": 1 },
+        {
+          "type": "operator",
+          "operator": "divide",
+          "operands": [
+            { "type": "reference", "path": "preference_percentage" },
+            { "type": "literal", "value": 100 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Validator Zod untuk AST (Contoh Implementasi Backend):**
+```typescript
+import { z } from 'zod';
+
+// Definisi node AST yang diizinkan
+const LiteralNode = z.object({
+  type: z.literal('literal'),
+  value: z.union([z.number(), z.string(), z.boolean()])
+});
+
+const ReferenceNode = z.object({
+  type: z.literal('reference'),
+  path: z.string().regex(/^[a-zA-Z0-9_.]+$/) // Hanya alfanumerik dan underscore, mencegah injeksi
+});
+
+const OperatorNode: z.ZodType<any> = z.lazy(() => 
+  z.object({
+    type: z.literal('operator'),
+    operator: z.enum(['add', 'subtract', 'multiply', 'divide', 'min', 'max', 'if_then_else']),
+    operands: z.array(z.union([LiteralNode, ReferenceNode, OperatorNode]))
+  })
+);
+
+export const FormulaAstSchema = z.union([LiteralNode, ReferenceNode, OperatorNode]);
+```
+
+**Evaluator Aman di Backend:**
+```typescript
+function evaluateAst(ast: any, context: Record<string, any>): number {
+  if (ast.type === 'literal') return ast.value;
+  if (ast.type === 'reference') {
+    const val = context[ast.path];
+    if (typeof val !== 'number') throw new Error(`Reference ${ast.path} is not a number`);
+    return val;
+  }
+  if (ast.type === 'operator') {
+    const operands = ast.operands.map((op: any) => evaluateAst(op, context));
+    switch (ast.operator) {
+      case 'add': return operands[0] + operands[1];
+      case 'subtract': return operands[0] - operands[1];
+      case 'multiply': return operands[0] * operands[1];
+      case 'divide': 
+        if (operands[1] === 0) throw new Error('Division by zero');
+        return operands[0] / operands[1];
+      // ... operator lain
+      default: throw new Error('Unknown operator');
+    }
+  }
+  throw new Error('Invalid AST node');
+}
+```
+
+---
+
+### 🗺️ ROADMAP IMPLEMENTASI (Sesuai Arahan Anda)
+
+Saya setuju sepenuhnya dengan urutan yang Anda berikan. Berikut adalah rencana eksekusi untuk **Fase 1 (Fondasi Database)**:
+
+**Langkah 1: Hierarki Sumber Hukum & Pasal**
+*   Membuat tabel `legal_sources` dan `provisions`.
+*   Menyiapkan mekanisme *soft-delete* dan *timestamp*.
+
+**Langkah 2: Aturan, Kondisi, dan Override**
+*   Membuat tabel `business_rules`, `rule_conditions`, `rule_overrides`.
+*   Mengimplementasikan validator AST untuk `formula_ast`.
+
+**Langkah 3: Policy Pack dengan Versi & Snapshot**
+*   Membuat tabel `policy_packs` dan `policy_pack_rules`.
+*   Merancang logika *snapshotting*: Saat status pack berubah dari `REVIEWED` ke `PUBLISHED`, sistem secara otomatis menyalin `default_value` dan `formula_ast` dari `business_rules` ke kolom `snapshot_value` dan `snapshot_formula_ast` di `policy_pack_rules`.
+
+**Langkah 4: Snapshot Keputusan & Audit Log**
+*   Membuat tabel `decision_references` dan `audit_logs`.
+*   Mengimplementasikan *database trigger* atau *Drizzle middleware* untuk memastikan `audit_logs` hanya bisa `INSERT`.
+
+**Langkah 5: Seed Awal (Perpres 46/2025 & Permenperin 35/2025)**
+*   Membuat *seeder script* yang memasukkan pasal-pasal dari kedua regulasi tersebut.
+*   **PENTING:** Semua entri akan memiliki `verification_status = 'UNVERIFIED'` secara *default*. Tim hukum harus meninjau dan mengubahnya menjadi `VERIFIED` setelah mencocokkan dengan naskah resmi.
+
+**Langkah 6: API Evaluasi Aturan & Antarmuka Admin**
+*   Membuat endpoint `/api/rules/evaluate` yang menerima `policyPackId`, `version`, dan `context` (input), lalu mengembalikan hasil evaluasi beserta `decision_reference_id`.
+*   Membuat antarmuka admin untuk mengelola aturan, kondisi, dan verifikasi hukum.
+
+---
+
+### 🎯 PERTANYAAN LANJUTAN UNTUK ANDA
+
+Sebelum saya mulai menulis *script* DDL PostgreSQL dan skema Drizzle yang siap dieksekusi, saya ingin memastikan beberapa detail teknis:
+
+1.  **Strategi Snapshotting:** Apakah Anda setuju dengan pendekatan *copy-on-publish* (menyalin nilai aturan ke kolom snapshot di `policy_pack_rules` saat pack dipublish)? Atau Anda lebih memilih pendekatan *point-in-time query* (menyimpan `as_of_date` dan melakukan query historis ke `business_rules` berdasarkan *timestamp*)?
+2.  **Detail AST Node:** Selain operator aritmatika dasar (`add`, `subtract`, `multiply`, `divide`), apakah kita perlu menambahkan operator logika/kondisional seperti `if_then_else`, `min`, `max`, atau `round` untuk mengakomodasi rumus TKDN yang lebih kompleks?
+3.  **Skema Drizzle vs SQL Murni:** Apakah Anda ingin saya menghasilkan file skema menggunakan **Drizzle ORM** (TypeScript) lengkap dengan relasi dan validator Zod, atau **DDL PostgreSQL murni** (.sql) yang bisa langsung dijalankan di database?
+
+Silakan beri tahu preferensi Anda, dan saya akan langsung mengeksekusi langkah pertama dari roadmap ini.

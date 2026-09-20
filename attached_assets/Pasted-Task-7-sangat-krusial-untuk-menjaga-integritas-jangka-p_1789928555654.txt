@@ -1,0 +1,647 @@
+Task #7 sangat krusial untuk menjaga integritas jangka panjang sistem. Berikut panduan desain untuk **integration test suite** yang mencakup semua invariant lifecycle policy pack.
+
+---
+
+## 🧪 STRUKTUR TEST SUITE
+
+### File: `artifacts/api-server/src/tests/policy-engine-integration.test.ts`
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { db } from '@procurement/db';
+import { 
+  legalSources, provisions, businessRules, 
+  policyPacks, policyPackRules, decisionReferences, auditLogs 
+} from '@procurement/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { app } from '../index'; // Express app
+import request from 'supertest';
+
+// Helper untuk mock Clerk authentication
+const MOCK_ADMIN_USER = 'user_test_admin_123';
+const MOCK_AUDITOR_USER = 'user_test_auditor_456';
+
+function authHeader(userId: string) {
+  return {
+    'Authorization': `Bearer mock-token-${userId}`,
+    'X-Clerk-User-Id': userId, // Custom header untuk test
+    'X-Audit-Reason': 'Test automation'
+  };
+}
+
+describe('Policy Engine Integration Tests', () => {
+  let testSourceId: string;
+  let testProvisionId: string;
+  let testRuleId: string;
+  let testPackId: string;
+
+  beforeAll(async () => {
+    // Setup: Buat data test
+    const [source] = await db.insert(legalSources).values({
+      regulationCode: 'TEST-REG-001',
+      regulationType: 'PERPRES',
+      number: '999',
+      year: 2025,
+      title: '[TEST] Test Regulation',
+      issuingAuthority: 'Test Authority',
+      authorityLevel: 1,
+      isBinding: true,
+      status: 'ACTIVE',
+      verificationStatus: 'VERIFIED'
+    }).returning();
+    testSourceId = source.id;
+
+    const [provision] = await db.insert(provisions).values({
+      legalSourceId: testSourceId,
+      articleNumber: '1',
+      provisionType: 'THRESHOLD',
+      rawText: 'Test provision text for integration testing',
+      sourceCategory: 'REGULATION'
+    }).returning();
+    testProvisionId = provision.id;
+
+    const [rule] = await db.insert(businessRules).values({
+      provisionId: testProvisionId,
+      ruleKey: 'test_threshold_rule',
+      ruleCategory: 'THRESHOLD',
+      defaultValue: { value: 100000000 },
+      valueType: 'DECIMAL',
+      version: 1,
+      isActive: true
+    }).returning();
+    testRuleId = rule.id;
+  });
+
+  afterAll(async () => {
+    // Cleanup: Hapus semua data test
+    await db.delete(decisionReferences).where(eq(decisionReferences.entityType, 'TEST'));
+    await db.delete(policyPackRules).where(
+      eq(policyPackRules.policyPackId, testPackId)
+    );
+    await db.delete(policyPacks).where(eq(policyPacks.id, testPackId));
+    await db.delete(businessRules).where(eq(businessRules.id, testRuleId));
+    await db.delete(provisions).where(eq(provisions.id, testProvisionId));
+    await db.delete(legalSources).where(eq(legalSources.id, testSourceId));
+  });
+
+  beforeEach(async () => {
+    // Buat policy pack baru untuk setiap test
+    const [pack] = await db.insert(policyPacks).values({
+      packName: 'TEST-PACK',
+      regimeType: 'GOVERNMENT_CENTRAL',
+      version: '1.0.0',
+      status: 'DRAFT'
+    }).returning();
+    testPackId = pack.id;
+
+    // Tambahkan rule ke pack
+    await db.insert(policyPackRules).values({
+      policyPackId: testPackId,
+      businessRuleId: testRuleId,
+      isMandatory: true
+    });
+  });
+
+  afterEach(async () => {
+    // Reset pack status ke DRAFT untuk test berikutnya
+    await db.update(policyPacks)
+      .set({ status: 'DRAFT' })
+      .where(eq(policyPacks.id, testPackId));
+  });
+
+  // ============================================
+  // TEST GROUP 1: Transisi Status Valid
+  // ============================================
+  describe('Valid Status Transitions', () => {
+    it('should transition from DRAFT to REVIEWED', async () => {
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Ready for review' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('REVIEWED');
+    });
+
+    it('should transition from REVIEWED to PUBLISHED', async () => {
+      // First: DRAFT → REVIEWED
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review complete' });
+
+      // Then: REVIEWED → PUBLISHED
+      const res = await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Approved for publication' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('PUBLISHED');
+      expect(res.body.publishedAt).toBeDefined();
+      expect(res.body.publishedBy).toBe(MOCK_ADMIN_USER);
+    });
+
+    it('should transition from PUBLISHED to RETIRED', async () => {
+      // Publish first
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Then: PUBLISHED → RETIRED
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'RETIRED', reason: 'No longer relevant' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('RETIRED');
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 2: Transisi Status Tidak Valid
+  // ============================================
+  describe('Invalid Status Transitions', () => {
+    it('should reject transition from PUBLISHED to DRAFT', async () => {
+      // Publish first
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Try: PUBLISHED → DRAFT (should fail)
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'DRAFT', reason: 'Try to revert' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('can only transition to RETIRED');
+    });
+
+    it('should reject transition from RETIRED to any status', async () => {
+      // Publish then retire
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'RETIRED', reason: 'Retire' });
+
+      // Try: RETIRED → PUBLISHED (should fail)
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'PUBLISHED', reason: 'Try to reactivate' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('should reject modification of published pack content', async () => {
+      // Publish first
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Try: Change pack_name (should fail)
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ packName: 'HACKED-NAME', reason: 'Try to modify' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Cannot modify content');
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 3: Publikasi Ditolak Jika Sumber UNVERIFIED
+  // ============================================
+  describe('Publish Blocking', () => {
+    it('should reject publish when binding source is UNVERIFIED', async () => {
+      // Create unverified source
+      const [unverifiedSource] = await db.insert(legalSources).values({
+        regulationCode: 'TEST-UNVERIFIED-001',
+        regulationType: 'PERMEN',
+        number: '888',
+        year: 2025,
+        title: '[UNVERIFIED] Test',
+        issuingAuthority: 'Test',
+        authorityLevel: 2,
+        isBinding: true,
+        status: 'ACTIVE',
+        verificationStatus: 'UNVERIFIED'
+      }).returning();
+
+      const [unverifiedProvision] = await db.insert(provisions).values({
+        legalSourceId: unverifiedSource.id,
+        articleNumber: '1',
+        provisionType: 'THRESHOLD',
+        rawText: 'Test',
+        sourceCategory: 'REGULATION'
+      }).returning();
+
+      const [unverifiedRule] = await db.insert(businessRules).values({
+        provisionId: unverifiedProvision.id,
+        ruleKey: 'test_unverified_rule',
+        ruleCategory: 'THRESHOLD',
+        defaultValue: { value: 50000000 },
+        valueType: 'DECIMAL',
+        version: 1,
+        isActive: true
+      }).returning();
+
+      // Add unverified rule to pack
+      await db.insert(policyPackRules).values({
+        policyPackId: testPackId,
+        businessRuleId: unverifiedRule.id,
+        isMandatory: true
+      });
+
+      // Try to publish (should fail)
+      const res = await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Try to publish with unverified source' });
+
+      expect(res.status).toBe(422);
+      expect(res.body.blockingSources).toBeDefined();
+      expect(res.body.blockingSources.length).toBeGreaterThan(0);
+      expect(res.body.blockingSources[0].regulationCode).toBe('TEST-UNVERIFIED-001');
+
+      // Cleanup
+      await db.delete(businessRules).where(eq(businessRules.id, unverifiedRule.id));
+      await db.delete(provisions).where(eq(provisions.id, unverifiedProvision.id));
+      await db.delete(legalSources).where(eq(legalSources.id, unverifiedSource.id));
+    });
+
+    it('should allow publish when all binding sources are VERIFIED', async () => {
+      // All sources in setup are VERIFIED, so this should succeed
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+
+      const res = await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'All sources verified' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('PUBLISHED');
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 4: Snapshot Immutability
+  // ============================================
+  describe('Snapshot Immutability', () => {
+    it('should create snapshot when publishing', async () => {
+      // Publish
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Check snapshot exists
+      const packRules = await db.query.policyPackRules.findMany({
+        where: eq(policyPackRules.policyPackId, testPackId)
+      });
+
+      expect(packRules.length).toBeGreaterThan(0);
+      for (const pr of packRules) {
+        expect(pr.snapshot).not.toBeNull();
+        expect(pr.snapshotTakenAt).not.toBeNull();
+      }
+    });
+
+    it('should not allow modification of rules in published pack', async () => {
+      // Publish
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Get pack rule ID
+      const [packRule] = await db.query.policyPackRules.findMany({
+        where: eq(policyPackRules.policyPackId, testPackId)
+      });
+
+      // Try to update rule (should fail)
+      try {
+        await db.update(policyPackRules)
+          .set({ isMandatory: false })
+          .where(eq(policyPackRules.id, packRule.id));
+        
+        throw new Error('Should have thrown exception');
+      } catch (e) {
+        expect(e.message).toContain('Cannot modify rules of published');
+      }
+    });
+
+    it('should not allow adding rules to published pack', async () => {
+      // Publish
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Create new rule
+      const [newRule] = await db.insert(businessRules).values({
+        provisionId: testProvisionId,
+        ruleKey: 'test_new_rule',
+        ruleCategory: 'THRESHOLD',
+        defaultValue: { value: 200000000 },
+        valueType: 'DECIMAL',
+        version: 1,
+        isActive: true
+      }).returning();
+
+      // Try to add to published pack (should fail)
+      try {
+        await db.insert(policyPackRules).values({
+          policyPackId: testPackId,
+          businessRuleId: newRule.id,
+          isMandatory: true
+        });
+        
+        throw new Error('Should have thrown exception');
+      } catch (e) {
+        expect(e.message).toContain('Cannot modify rules of published');
+      }
+
+      // Cleanup
+      await db.delete(businessRules).where(eq(businessRules.id, newRule.id));
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 5: Decision Reference Immutability
+  // ============================================
+  describe('Decision Reference Immutability', () => {
+    it('should create decision reference on evaluation', async () => {
+      // Publish pack
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      // Evaluate
+      const evalRes = await request(app)
+        .post('/api/rules/evaluate')
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({
+          policyPackCode: 'TEST-PACK',
+          policyPackVersion: '1.0.0',
+          context: { package_value: 50000000 }
+        });
+
+      expect(evalRes.status).toBe(200);
+      expect(evalRes.body.decisionReferenceId).toBeDefined();
+
+      // Check decision reference exists
+      const decision = await db.query.decisionReferences.findFirst({
+        where: eq(decisionReferences.id, evalRes.body.decisionReferenceId)
+      });
+
+      expect(decision).toBeDefined();
+      expect(decision.evaluationInput).toBeDefined();
+      expect(decision.evaluationResult).toBeDefined();
+      expect(decision.snapshot).toBeDefined();
+    });
+
+    it('should not allow modification of decision reference', async () => {
+      // Publish and evaluate
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      const evalRes = await request(app)
+        .post('/api/rules/evaluate')
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({
+          policyPackCode: 'TEST-PACK',
+          policyPackVersion: '1.0.0',
+          context: { package_value: 50000000 }
+        });
+
+      const decisionId = evalRes.body.decisionReferenceId;
+
+      // Try to update decision (should fail)
+      try {
+        await db.update(decisionReferences)
+          .set({ evaluationInput: { hacked: true } })
+          .where(eq(decisionReferences.id, decisionId));
+        
+        throw new Error('Should have thrown exception');
+      } catch (e) {
+        expect(e.message).toContain('immutable');
+      }
+    });
+
+    it('should not allow deletion of decision reference', async () => {
+      // Publish and evaluate
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review' });
+      
+      await request(app)
+        .post(`/api/admin/policy-packs/${testPackId}/publish`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ reason: 'Publish' });
+
+      const evalRes = await request(app)
+        .post('/api/rules/evaluate')
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({
+          policyPackCode: 'TEST-PACK',
+          policyPackVersion: '1.0.0',
+          context: { package_value: 50000000 }
+        });
+
+      const decisionId = evalRes.body.decisionReferenceId;
+
+      // Try to delete decision (should fail)
+      try {
+        await db.delete(decisionReferences)
+          .where(eq(decisionReferences.id, decisionId));
+        
+        throw new Error('Should have thrown exception');
+      } catch (e) {
+        expect(e.message).toContain('immutable');
+      }
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 6: Audit Trail Completeness
+  // ============================================
+  describe('Audit Trail', () => {
+    it('should log all status transitions', async () => {
+      const initialCount = (await db.query.auditLogs.findMany({
+        where: and(
+          eq(auditLogs.entityType, 'policy_packs'),
+          eq(auditLogs.entityId, testPackId)
+        )
+      })).length;
+
+      // Transition: DRAFT → REVIEWED
+      await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set(authHeader(MOCK_ADMIN_USER))
+        .send({ status: 'REVIEWED', reason: 'Review transition' });
+
+      const afterReviewCount = (await db.query.auditLogs.findMany({
+        where: and(
+          eq(auditLogs.entityType, 'policy_packs'),
+          eq(auditLogs.entityId, testPackId)
+        )
+      })).length;
+
+      expect(afterReviewCount).toBe(initialCount + 1);
+
+      // Check audit log content
+      const [auditLog] = await db.query.auditLogs.findMany({
+        where: and(
+          eq(auditLogs.entityType, 'policy_packs'),
+          eq(auditLogs.entityId, testPackId)
+        ),
+        orderBy: (auditLogs, { desc }) => [desc(auditLogs.timestamp)]
+      });
+
+      expect(auditLog.actionType).toBe('UPDATE');
+      expect(auditLog.actorId).toBe(MOCK_ADMIN_USER);
+      expect(auditLog.reason).toBe('Review transition');
+      expect(auditLog.previousState).toBeDefined();
+      expect(auditLog.newState).toBeDefined();
+      expect(auditLog.newState.status).toBe('REVIEWED');
+    });
+
+    it('should require reason for all mutations', async () => {
+      // Try without reason (should fail)
+      const res = await request(app)
+        .patch(`/api/admin/policy-packs/${testPackId}`)
+        .set({
+          'Authorization': `Bearer mock-token-${MOCK_ADMIN_USER}`,
+          'X-Clerk-User-Id': MOCK_ADMIN_USER
+          // No X-Audit-Reason header
+        })
+        .send({ status: 'REVIEWED' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('reason');
+    });
+  });
+});
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Test file dibuat di `artifacts/api-server/src/tests/policy-engine-integration.test.ts`
+- [ ] Helper untuk mock Clerk authentication
+- [ ] Setup data test (legal source, provision, business rule, policy pack)
+- [ ] Cleanup data setelah test selesai
+- [ ] Test transisi status valid (DRAFT → REVIEWED → PUBLISHED → RETIRED)
+- [ ] Test transisi status tidak valid (PUBLISHED → DRAFT, RETIRED → PUBLISHED)
+- [ ] Test penolakan modifikasi konten pack PUBLISHED
+- [ ] Test penolakan publikasi jika sumber mengikat UNVERIFIED
+- [ ] Test pembuatan snapshot saat publikasi
+- [ ] Test penolakan modifikasi aturan di pack PUBLISHED
+- [ ] Test penolakan penambahan aturan ke pack PUBLISHED
+- [ ] Test pembuatan decision reference saat evaluasi
+- [ ] Test penolakan modifikasi decision reference
+- [ ] Test penolakan penghapusan decision reference
+- [ ] Test kelengkapan audit trail
+- [ ] Test kewajiban reason untuk semua mutasi
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+
+---
+
+## 🚀 CARA MENJALANKAN TEST
+
+```bash
+# Jalankan semua test
+cd artifacts/api-server
+npm test
+
+# Jalankan hanya test policy engine
+npm test -- policy-engine-integration.test.ts
+
+# Jalankan dengan coverage
+npm run test:coverage
+
+# Jalankan dalam watch mode
+npm run test:watch
+```
+
+---
+
+## ⚠️ CATATAN PENTING
+
+1. **Database test terpisah**: Pastikan test menggunakan database terpisah atau transaction rollback agar tidak mengganggu data produksi.
+
+2. **Mock Clerk**: Implementasi mock Clerk authentication tergantung pada bagaimana middleware Clerk di-setup di API server. Sesuaikan `authHeader` helper dengan implementasi aktual.
+
+3. **Error messages**: Test mengharapkan error message tertentu (misal: "Cannot modify rules of published"). Pastikan error message di trigger PostgreSQL sesuai dengan yang diharapkan test.
+
+4. **Cleanup**: Pastikan `afterAll` menghapus semua data test, termasuk decision reference yang dibuat saat evaluasi.
+
+5. **Parallel execution**: Jika test dijalankan secara paralel, pastikan setiap test menggunakan `testPackId` yang berbeda untuk menghindari konflik.
+
+Silakan lanjutkan implementasi test suite ini. Jika ada inkonsistensi antara spesifikasi test dan implementasi aktual (misal: error message berbeda), saya siap membantu menyesuaikan.

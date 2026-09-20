@@ -565,6 +565,11 @@ export interface RuleEvaluationResult {
   rules: RuleExplanation[];
 }
 
+export type StoredDecision = RuleEvaluationResult & {
+  evaluatedAt: string;
+  evaluatorVersion: string;
+};
+
 export type ActorIdParameter = string;
 
 export type ActorRoleParameter = typeof ActorRoleParameter[keyof typeof ActorRoleParameter];
@@ -585,5 +590,16 @@ search?: string;
 export type ComparePolicyPacksParams = {
 baseId: string;
 targetId: string;
+};
+
+export type ListDecisionsParams = {
+/**
+ * @minLength 1
+ */
+entityType: string;
+/**
+ * @minLength 1
+ */
+entityId: string;
 };
 

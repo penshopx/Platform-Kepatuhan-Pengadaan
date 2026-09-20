@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import {
   businessRulesTable,
   db,
@@ -13,6 +13,10 @@ import {
 import {
   EvaluateRulesBody,
   EvaluateRulesResponse,
+  GetDecisionParams,
+  GetDecisionResponse,
+  ListDecisionsQueryParams,
+  ListDecisionsResponse,
   ListPublishedPolicyPacksResponse,
   PublishPolicyPackHeader,
   PublishPolicyPackParams,
@@ -28,6 +32,33 @@ import {
 import { authenticateSignedActor } from "../lib/signed-actor";
 
 const router: IRouter = Router();
+
+type StoredDecisionSnapshot = {
+  policyPack: unknown;
+  evaluation: {
+    input: unknown;
+    output: unknown;
+    rules: unknown;
+  };
+};
+
+function presentStoredDecision(decision: {
+  id: string;
+  snapshot: Record<string, unknown>;
+  evaluatorVersion: string;
+  evaluatedAt: Date;
+}) {
+  const snapshot = decision.snapshot as unknown as StoredDecisionSnapshot;
+  return {
+    decisionReference: decision.id,
+    policyPack: snapshot.policyPack,
+    input: snapshot.evaluation.input,
+    output: snapshot.evaluation.output,
+    rules: snapshot.evaluation.rules,
+    evaluatorVersion: decision.evaluatorVersion,
+    evaluatedAt: decision.evaluatedAt.toISOString(),
+  };
+}
 
 router.get("/published-policy-packs", async (_req, res): Promise<void> => {
   const packs = await db
@@ -59,6 +90,59 @@ router.get("/published-policy-packs", async (_req, res): Promise<void> => {
       })),
     ),
   );
+});
+
+router.get("/decisions", async (req, res): Promise<void> => {
+  const query = ListDecisionsQueryParams.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: query.error.message });
+    return;
+  }
+
+  const decisions = await db
+    .select({
+      id: decisionReferencesTable.id,
+      snapshot: decisionReferencesTable.snapshot,
+      evaluatorVersion: decisionReferencesTable.evaluatorVersion,
+      evaluatedAt: decisionReferencesTable.evaluatedAt,
+    })
+    .from(decisionReferencesTable)
+    .where(
+      and(
+        eq(decisionReferencesTable.entityType, query.data.entityType),
+        eq(decisionReferencesTable.entityId, query.data.entityId),
+      ),
+    )
+    .orderBy(desc(decisionReferencesTable.evaluatedAt));
+
+  res.json(
+    ListDecisionsResponse.parse(decisions.map(presentStoredDecision)),
+  );
+});
+
+router.get("/decisions/:decisionReference", async (req, res): Promise<void> => {
+  const params = GetDecisionParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: "Decision reference tidak valid" });
+    return;
+  }
+
+  const [decision] = await db
+    .select({
+      id: decisionReferencesTable.id,
+      snapshot: decisionReferencesTable.snapshot,
+      evaluatorVersion: decisionReferencesTable.evaluatorVersion,
+      evaluatedAt: decisionReferencesTable.evaluatedAt,
+    })
+    .from(decisionReferencesTable)
+    .where(eq(decisionReferencesTable.id, params.data.decisionReference));
+
+  if (!decision) {
+    res.status(404).json({ error: "Decision reference tidak ditemukan" });
+    return;
+  }
+
+  res.json(GetDecisionResponse.parse(presentStoredDecision(decision)));
 });
 
 router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {

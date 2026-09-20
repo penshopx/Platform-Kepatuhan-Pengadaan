@@ -817,3 +817,148 @@ export const EvaluateRulesResponse = zod.object({
 })
 
 
+/**
+ * @summary List immutable decisions for an entity
+ */
+
+
+
+
+export const ListDecisionsQueryParams = zod.object({
+  "entityType": zod.coerce.string().min(1),
+  "entityId": zod.coerce.string().min(1)
+})
+
+
+
+
+
+export const ListDecisionsResponseItem = zod.object({
+  "decisionReference": zod.string().uuid(),
+  "policyPack": zod.object({
+  "id": zod.string().uuid(),
+  "name": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['PUBLISHED'])
+}),
+  "input": zod.object({
+  "entityType": zod.string().min(1),
+  "entityId": zod.string().min(1),
+  "policyPackId": zod.string().uuid(),
+  "context": zod.record(zod.string(), zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]))
+}),
+  "output": zod.object({
+  "status": zod.enum(['COMPLIANT', 'NON_COMPLIANT', 'NOT_APPLICABLE']),
+  "passed": zod.number().int(),
+  "failed": zod.number().int(),
+  "mandatoryFailed": zod.number().int(),
+  "notApplicable": zod.number().int()
+}),
+  "rules": zod.array(zod.object({
+  "rule": zod.object({
+  "id": zod.string().uuid(),
+  "key": zod.string(),
+  "category": zod.string(),
+  "description": zod.string().nullish(),
+  "valueType": zod.string(),
+  "mandatory": zod.boolean()
+}),
+  "provision": zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "provisionType": zod.string(),
+  "rawText": zod.string()
+}),
+  "source": zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "isBinding": zod.boolean()
+}),
+  "verificationStatus": zod.string(),
+  "input": zod.record(zod.string(), zod.unknown()),
+  "output": zod.object({
+  "status": zod.enum(['PASS', 'FAIL', 'NOT_APPLICABLE']),
+  "value": zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]),
+  "referencedPaths": zod.array(zod.string())
+})
+}))
+}).and(zod.object({
+  "evaluatedAt": zod.coerce.date(),
+  "evaluatorVersion": zod.string()
+}))
+export const ListDecisionsResponse = zod.array(ListDecisionsResponseItem)
+
+
+/**
+ * Returns the stored policy pack, input, output, and rule explanations without evaluating rules again.
+ * @summary Get an immutable decision by reference
+ */
+export const GetDecisionParams = zod.object({
+  "decisionReference": zod.coerce.string().uuid()
+})
+
+
+
+
+
+export const GetDecisionResponse = zod.object({
+  "decisionReference": zod.string().uuid(),
+  "policyPack": zod.object({
+  "id": zod.string().uuid(),
+  "name": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['PUBLISHED'])
+}),
+  "input": zod.object({
+  "entityType": zod.string().min(1),
+  "entityId": zod.string().min(1),
+  "policyPackId": zod.string().uuid(),
+  "context": zod.record(zod.string(), zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]))
+}),
+  "output": zod.object({
+  "status": zod.enum(['COMPLIANT', 'NON_COMPLIANT', 'NOT_APPLICABLE']),
+  "passed": zod.number().int(),
+  "failed": zod.number().int(),
+  "mandatoryFailed": zod.number().int(),
+  "notApplicable": zod.number().int()
+}),
+  "rules": zod.array(zod.object({
+  "rule": zod.object({
+  "id": zod.string().uuid(),
+  "key": zod.string(),
+  "category": zod.string(),
+  "description": zod.string().nullish(),
+  "valueType": zod.string(),
+  "mandatory": zod.boolean()
+}),
+  "provision": zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "provisionType": zod.string(),
+  "rawText": zod.string()
+}),
+  "source": zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "isBinding": zod.boolean()
+}),
+  "verificationStatus": zod.string(),
+  "input": zod.record(zod.string(), zod.unknown()),
+  "output": zod.object({
+  "status": zod.enum(['PASS', 'FAIL', 'NOT_APPLICABLE']),
+  "value": zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]),
+  "referencedPaths": zod.array(zod.string())
+})
+}))
+}).and(zod.object({
+  "evaluatedAt": zod.coerce.date(),
+  "evaluatorVersion": zod.string()
+}))
+
+

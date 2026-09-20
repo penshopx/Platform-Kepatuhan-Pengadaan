@@ -474,6 +474,59 @@ paths:
           description: Invalid evaluation input or formula
         "404":
           description: Published policy pack not found
+  /decisions:
+    get:
+      operationId: listDecisions
+      tags: [evaluations]
+      summary: List immutable decisions for an entity
+      parameters:
+        - name: entityType
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: entityId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Immutable decisions ordered from newest to oldest
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoredDecision"
+        "400":
+          description: Invalid entity filter
+  /decisions/{decisionReference}:
+    get:
+      operationId: getDecision
+      tags: [evaluations]
+      summary: Get an immutable decision by reference
+      description: Returns the stored policy pack, input, output, and rule explanations without evaluating rules again.
+      parameters:
+        - name: decisionReference
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Stored immutable decision snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoredDecision"
+        "400":
+          description: Invalid decision reference
+        "404":
+          description: Decision reference not found
 components:
   parameters:
     PackageId:
@@ -1047,6 +1100,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RuleExplanation"
+    StoredDecision:
+      allOf:
+        - $ref: "#/components/schemas/RuleEvaluationResult"
+        - type: object
+          required: [evaluatedAt, evaluatorVersion]
+          properties:
+            evaluatedAt:
+              type: string
+              format: date-time
+            evaluatorVersion:
+              type: string
     EvaluatedPolicyPack:
       type: object
       required: [id, name, version, status]

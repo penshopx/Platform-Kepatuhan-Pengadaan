@@ -37,6 +37,7 @@ function Badge({ children, variant = "default", className = "" }: { children: Re
 export default function PackageDetail() {
   const params = useParams();
   const id = Number(params.id);
+  const decisionReference = new URLSearchParams(window.location.search).get("decisionReference") ?? "";
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -291,7 +292,7 @@ export default function PackageDetail() {
         </div>
       </div>
 
-      <PackageComplianceEvaluation pkg={pkg} />
+      <PackageComplianceEvaluation pkg={pkg} initialDecisionReference={decisionReference} />
     </div>
   );
 }

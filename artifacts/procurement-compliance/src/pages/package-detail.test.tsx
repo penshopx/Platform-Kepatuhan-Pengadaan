@@ -5,6 +5,7 @@ import type {
   ProcurementPackageDetail,
   PublishedPolicyPack,
   RuleEvaluationResult,
+  StoredDecision,
 } from "@workspace/api-client-react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,9 @@ const state = vi.hoisted(() => ({
   evaluationResult: null as RuleEvaluationResult | null,
   evaluationError: null as (Error & { data?: { error?: string } }) | null,
   evaluationMutate: vi.fn(),
+  decisions: [] as StoredDecision[],
+  storedDecision: null as StoredDecision | null,
+  storedDecisionError: null as (Error & { status?: number; data?: { error?: string } }) | null,
 }));
 
 vi.mock("wouter", () => ({
@@ -34,6 +38,19 @@ vi.mock("@workspace/api-client-react", async () => {
       data: state.publishedPacks,
       isLoading: false,
       isError: false,
+    }),
+    getGetDecisionQueryKey: (reference: string) => ["decisions", reference],
+    useListDecisions: () => ({
+      data: state.decisions,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+    useGetDecision: () => ({
+      data: state.storedDecision ?? undefined,
+      error: state.storedDecisionError,
+      isLoading: false,
+      isError: Boolean(state.storedDecisionError),
     }),
     useEvaluateRules: () => {
       const [data, setData] = React.useState<RuleEvaluationResult | undefined>();
@@ -87,7 +104,7 @@ const publishedPack: PublishedPolicyPack = {
 };
 
 const evaluationFixture: RuleEvaluationResult = {
-  decisionReference: "decision-ref-2026-001",
+  decisionReference: "11111111-1111-4111-8111-111111111111",
   policyPack: {
     id: publishedPack.id,
     name: publishedPack.packName,
@@ -145,6 +162,12 @@ const evaluationFixture: RuleEvaluationResult = {
   ],
 };
 
+const storedDecisionFixture: StoredDecision = {
+  ...evaluationFixture,
+  evaluatedAt: "2026-09-20T08:30:00.000Z",
+  evaluatorVersion: "dre-ast-v1",
+};
+
 function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -162,6 +185,10 @@ describe("detail paket: evaluasi kepatuhan", () => {
     state.evaluationResult = null;
     state.evaluationError = null;
     state.evaluationMutate.mockReset();
+    state.decisions = [];
+    state.storedDecision = null;
+    state.storedDecisionError = null;
+    window.history.replaceState(null, "", "/packages/41");
   });
 
   it("menjalankan pack PUBLISHED dan menampilkan alasan keputusan lengkap dari snapshot rule", async () => {
@@ -187,12 +214,14 @@ describe("detail paket: evaluasi kepatuhan", () => {
       }),
     });
     expect(screen.getByTestId("status-evaluation-summary")).toHaveTextContent("Patuh");
-    expect(screen.getByTestId("text-decision-reference")).toHaveTextContent("decision-ref-2026-001");
+    expect(screen.getByTestId("text-decision-reference")).toHaveTextContent(
+      "11111111-1111-4111-8111-111111111111",
+    );
     expect(screen.getByText("PERPRES-TEST-2026 · Pasal 12 ayat (3)")).toBeVisible();
     expect(screen.getByText("Peraturan Pengadaan Uji")).toBeVisible();
     expect(screen.getByText("Pemerintah Republik Indonesia")).toBeVisible();
     expect(screen.getByText("VERIFIED")).toBeVisible();
-    expect(screen.getByText(/\"packageValue\": 250000000/)).toBeVisible();
+    expect(screen.getAllByText(/\"packageValue\": 250000000/)).toHaveLength(2);
     expect(screen.getByText("Referensi: packageValue")).toBeVisible();
     expect(screen.getByText("Nilai:", { exact: false }).parentElement).toHaveTextContent("true");
   });
@@ -218,5 +247,44 @@ describe("detail paket: evaluasi kepatuhan", () => {
       "Policy pack terpublikasi belum tersedia",
     );
     expect(screen.queryByTestId("button-evaluate-compliance")).not.toBeInTheDocument();
+  });
+
+  it("membuka snapshot keputusan lama dari riwayat tanpa menjalankan evaluasi ulang", async () => {
+    state.decisions = [storedDecisionFixture];
+    state.storedDecision = storedDecisionFixture;
+
+    renderPage();
+    await userEvent.click(
+      screen.getByTestId(`button-open-decision-${storedDecisionFixture.decisionReference}`),
+    );
+
+    expect(state.evaluationMutate).not.toHaveBeenCalled();
+    expect(screen.getByTestId("text-decision-reference")).toHaveTextContent(
+      storedDecisionFixture.decisionReference,
+    );
+    expect(screen.getByText("dre-ast-v1")).toBeVisible();
+    expect(screen.getByText("Snapshot input")).toBeVisible();
+    expect(window.location.search).toContain(
+      `decisionReference=${storedDecisionFixture.decisionReference}`,
+    );
+  });
+
+  it("menampilkan pesan yang jelas saat decision reference tidak ditemukan", () => {
+    state.storedDecisionError = Object.assign(new Error("Not found"), {
+      status: 404,
+      data: { error: "Decision reference tidak ditemukan" },
+    });
+    window.history.replaceState(
+      null,
+      "",
+      "/packages/41?decisionReference=22222222-2222-4222-8222-222222222222",
+    );
+
+    renderPage();
+
+    expect(screen.getByTestId("status-decision-not-found")).toHaveTextContent(
+      "Decision reference tidak ditemukan",
+    );
+    expect(state.evaluationMutate).not.toHaveBeenCalled();
   });
 });

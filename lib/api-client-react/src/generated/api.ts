@@ -30,6 +30,7 @@ import type {
   LegalSource,
   LegalSourceInput,
   LegalSourceUpdate,
+  ListDecisionsParams,
   ListPackagesParams,
   PackageInput,
   PackageUpdate,
@@ -46,7 +47,8 @@ import type {
   Regulation,
   ReviewCompletionInput,
   RuleEvaluationInput,
-  RuleEvaluationResult
+  RuleEvaluationResult,
+  StoredDecision
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -2065,4 +2067,160 @@ export const useEvaluateRules = <TError = ErrorType<void>,
       > => {
       return useMutation(getEvaluateRulesMutationOptions(options));
     }
+
+export const getListDecisionsUrl = (params: ListDecisionsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/decisions?${stringifiedParams}` : `/api/decisions`
+}
+
+/**
+ * @summary List immutable decisions for an entity
+ */
+export const listDecisions = async (params: ListDecisionsParams, options?: Parameters<typeof customFetch>[1]): Promise<StoredDecision[]> => {
+
+  return customFetch<StoredDecision[]>(getListDecisionsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListDecisionsQueryKey = (params?: ListDecisionsParams,) => {
+    return [
+    `/api/decisions`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListDecisionsQueryOptions = <TData = Awaited<ReturnType<typeof listDecisions>>, TError = ErrorType<void>>(params: ListDecisionsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDecisions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListDecisionsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listDecisions>>> = ({ signal }) => listDecisions(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listDecisions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListDecisionsQueryResult = NonNullable<Awaited<ReturnType<typeof listDecisions>>>
+export type ListDecisionsQueryError = ErrorType<void>
+
+
+/**
+ * @summary List immutable decisions for an entity
+ */
+
+export function useListDecisions<TData = Awaited<ReturnType<typeof listDecisions>>, TError = ErrorType<void>>(
+ params: ListDecisionsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDecisions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListDecisionsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetDecisionUrl = (decisionReference: string,) => {
+
+
+
+
+  return `/api/decisions/${decisionReference}`
+}
+
+/**
+ * Returns the stored policy pack, input, output, and rule explanations without evaluating rules again.
+ * @summary Get an immutable decision by reference
+ */
+export const getDecision = async (decisionReference: string, options?: Parameters<typeof customFetch>[1]): Promise<StoredDecision> => {
+
+  return customFetch<StoredDecision>(getGetDecisionUrl(decisionReference),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetDecisionQueryKey = (decisionReference: string,) => {
+    return [
+    `/api/decisions/${decisionReference}`
+    ] as const;
+    }
+
+
+export const getGetDecisionQueryOptions = <TData = Awaited<ReturnType<typeof getDecision>>, TError = ErrorType<void>>(decisionReference: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDecision>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetDecisionQueryKey(decisionReference);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getDecision>>> = ({ signal }) => getDecision(decisionReference, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: decisionReference !== null && decisionReference !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getDecision>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetDecisionQueryResult = NonNullable<Awaited<ReturnType<typeof getDecision>>>
+export type GetDecisionQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get an immutable decision by reference
+ */
+
+export function useGetDecision<TData = Awaited<ReturnType<typeof getDecision>>, TError = ErrorType<void>>(
+ decisionReference: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDecision>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetDecisionQueryOptions(decisionReference,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
 

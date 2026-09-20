@@ -3,7 +3,11 @@ import {
   type PublishedPolicyPack,
   type ProcurementPackageDetail,
   type RuleEvaluationResult,
+  type StoredDecision,
+  getGetDecisionQueryKey,
   useEvaluateRules,
+  useGetDecision,
+  useListDecisions,
   useListPublishedPolicyPacks,
 } from "@workspace/api-client-react";
 import {
@@ -12,6 +16,7 @@ import {
   CheckCircle2,
   Clipboard,
   FileSearch,
+  History,
   Loader2,
   Scale,
   ShieldAlert,
@@ -19,6 +24,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 type ApiFailure = Error & {
+  status?: number;
   data?: { error?: string } | null;
 };
 
@@ -40,7 +46,7 @@ function formatValue(value: unknown) {
   return String(value);
 }
 
-function EvaluationResults({ result }: { result: RuleEvaluationResult }) {
+function EvaluationResults({ result }: { result: RuleEvaluationResult | StoredDecision }) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
 
@@ -118,6 +124,32 @@ function EvaluationResults({ result }: { result: RuleEvaluationResult }) {
             {copied ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
             {copied ? "Tersalin" : "Salin"}
           </button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 rounded-xl border border-border bg-secondary/20 p-4 md:grid-cols-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Snapshot input
+          </p>
+          <pre className="mt-2 max-h-56 overflow-auto rounded-md bg-background p-3 text-xs leading-relaxed">
+            {formatValue(result.input)}
+          </pre>
+        </div>
+        <div className="text-sm">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Snapshot policy pack
+          </p>
+          <dl className="mt-2 space-y-2 rounded-md bg-background p-3">
+            <div><dt className="text-muted-foreground">Nama</dt><dd className="font-medium">{result.policyPack.name}</dd></div>
+            <div><dt className="text-muted-foreground">Versi</dt><dd className="font-medium">{result.policyPack.version}</dd></div>
+            {"evaluatedAt" in result && (
+              <>
+                <div><dt className="text-muted-foreground">Dievaluasi</dt><dd className="font-medium">{new Date(result.evaluatedAt).toLocaleString("id-ID")}</dd></div>
+                <div><dt className="text-muted-foreground">Evaluator</dt><dd className="font-mono text-xs">{result.evaluatorVersion}</dd></div>
+              </>
+            )}
+          </dl>
         </div>
       </div>
 
@@ -230,10 +262,36 @@ function EvaluationResults({ result }: { result: RuleEvaluationResult }) {
   );
 }
 
-export function PackageComplianceEvaluation({ pkg }: { pkg: ProcurementPackageDetail }) {
+export function PackageComplianceEvaluation({
+  pkg,
+  initialDecisionReference = "",
+}: {
+  pkg: ProcurementPackageDetail;
+  initialDecisionReference?: string;
+}) {
   const { data: publishedPacks, isLoading, isError } = useListPublishedPolicyPacks();
   const [selectedPackId, setSelectedPackId] = useState("");
-  const evaluation = useEvaluateRules();
+  const [activeDecisionReference, setActiveDecisionReference] = useState(initialDecisionReference);
+  const decisions = useListDecisions({
+    entityType: "PROCUREMENT_PACKAGE",
+    entityId: String(pkg.id),
+  });
+  const storedDecision = useGetDecision(activeDecisionReference, {
+    query: {
+      enabled: Boolean(activeDecisionReference),
+      retry: false,
+      queryKey: getGetDecisionQueryKey(activeDecisionReference),
+    },
+  });
+  const evaluation = useEvaluateRules({
+    mutation: {
+      onSuccess: (result) => {
+        setActiveDecisionReference("");
+        void decisions.refetch();
+        window.history.replaceState(null, "", window.location.pathname);
+      },
+    },
+  });
 
   useEffect(() => {
     if (!selectedPackId && publishedPacks && publishedPacks.length > 0) {
@@ -260,6 +318,20 @@ export function PackageComplianceEvaluation({ pkg }: { pkg: ProcurementPackageDe
   };
 
   const error = evaluation.error as ApiFailure | null;
+  const storedError = storedDecision.error as ApiFailure | null;
+  const storedDecisionMatchesPackage =
+    storedDecision.data?.input.entityType === "PROCUREMENT_PACKAGE" &&
+    storedDecision.data?.input.entityId === String(pkg.id);
+  const visibleResult = evaluation.data ??
+    (storedDecisionMatchesPackage ? storedDecision.data : undefined);
+
+  const openDecision = (reference: string) => {
+    evaluation.reset();
+    setActiveDecisionReference(reference);
+    const url = new URL(window.location.href);
+    url.searchParams.set("decisionReference", reference);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  };
 
   return (
     <section className="rounded-xl border border-border bg-card shadow-sm" data-testid="section-compliance-evaluation">
@@ -350,7 +422,58 @@ export function PackageComplianceEvaluation({ pkg }: { pkg: ProcurementPackageDe
           </div>
         )}
 
-        {evaluation.data && <EvaluationResults result={evaluation.data} />}
+        <div className="rounded-xl border border-border p-4" data-testid="section-decision-history">
+          <div className="flex items-center gap-2">
+            <History className="h-4 w-4 text-muted-foreground" />
+            <h3 className="font-semibold">Riwayat keputusan</h3>
+          </div>
+          {decisions.isLoading ? (
+            <p className="mt-3 text-sm text-muted-foreground">Memuat riwayat keputusan...</p>
+          ) : decisions.isError ? (
+            <p className="mt-3 text-sm text-destructive">Riwayat keputusan gagal dimuat.</p>
+          ) : !decisions.data?.length ? (
+            <p className="mt-3 text-sm text-muted-foreground">Belum ada keputusan tersimpan untuk paket ini.</p>
+          ) : (
+            <div className="mt-3 divide-y divide-border">
+              {decisions.data.map((decision) => (
+                <button
+                  key={decision.decisionReference}
+                  type="button"
+                  onClick={() => openDecision(decision.decisionReference)}
+                  className="flex w-full flex-col gap-1 py-3 text-left hover:text-primary sm:flex-row sm:items-center sm:justify-between"
+                  data-testid={`button-open-decision-${decision.decisionReference}`}
+                >
+                  <span>
+                    <span className="block font-medium">{decision.policyPack.name} · v{decision.policyPack.version}</span>
+                    <span className="block font-mono text-xs text-muted-foreground">{decision.decisionReference}</span>
+                  </span>
+                  <span className="text-xs text-muted-foreground">{new Date(decision.evaluatedAt).toLocaleString("id-ID")}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {activeDecisionReference && storedDecision.isLoading && (
+          <div className="flex items-center gap-3 rounded-lg border border-border p-4 text-sm text-muted-foreground" data-testid="status-decision-loading">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Memuat snapshot keputusan...
+          </div>
+        )}
+
+        {activeDecisionReference && (storedDecision.isError || (storedDecision.data && !storedDecisionMatchesPackage)) && (
+          <div className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-destructive" data-testid="status-decision-not-found">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+            <div>
+              <p className="font-semibold">Decision reference tidak ditemukan</p>
+              <p className="mt-1 text-sm opacity-80">
+                {storedError?.data?.error || "Referensi tidak tersedia untuk paket ini."}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {visibleResult && <EvaluationResults result={visibleResult} />}
       </div>
     </section>
   );

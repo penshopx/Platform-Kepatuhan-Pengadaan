@@ -21,7 +21,6 @@ import type {
 
 import type {
   Activity,
-  CompleteEpurchasingReviewParams,
   Dashboard,
   EpurchasingReview,
   HealthStatus,
@@ -30,7 +29,8 @@ import type {
   PackageUpdate,
   ProcurementPackage,
   ProcurementPackageDetail,
-  Regulation
+  Regulation,
+  ReviewCompletionInput
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -707,34 +707,39 @@ export function useListEpurchasingReviews<TData = Awaited<ReturnType<typeof list
 
 
 
-export const getCompleteEpurchasingReviewUrl = (id: number,
-    params: CompleteEpurchasingReviewParams,) => {
-  const normalizedParams = new URLSearchParams();
+export const getCompleteEpurchasingReviewUrl = () => {
 
-  Object.entries(params || {}).forEach(([key, value]) => {
 
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? 'null' : String(value))
-    }
-  });
 
-  const stringifiedParams = normalizedParams.toString();
 
-  return stringifiedParams.length > 0 ? `/api/reviews/epurchasing/${id}/complete?${stringifiedParams}` : `/api/reviews/epurchasing/${id}/complete`
+  return `/api/reviews/epurchasing/complete`
 }
 
 /**
  * @summary Mark an e-purchasing review item complete
  */
-export const completeEpurchasingReview = async (id: number,
-    params: CompleteEpurchasingReviewParams, options?: Parameters<typeof customFetch>[1]): Promise<EpurchasingReview> => {
+export const completeEpurchasingReview = async (reviewCompletionInput: ReviewCompletionInput, options?: Parameters<typeof customFetch>[1]): Promise<EpurchasingReview> => {
 
-  return customFetch<EpurchasingReview>(getCompleteEpurchasingReviewUrl(id,params),
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<EpurchasingReview>(getCompleteEpurchasingReviewUrl(),
   {
     ...options,
-    method: 'POST'
-
-
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewCompletionInput)
   }
 );}
 
@@ -759,9 +764,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
       const mutationFn: MutationFunction<Awaited<ReturnType<typeof completeEpurchasingReview>>, CompleteEpurchasingReviewMutationVariables> = (props) => {
-          const {id,params} = props ?? {};
+          const {data} = props ?? {};
 
-          return  completeEpurchasingReview(id,params,requestOptions)
+          return  completeEpurchasingReview(data,requestOptions)
         }
 
 
@@ -772,9 +777,9 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
   return  { mutationFn, ...mutationOptions }}
 
     export type CompleteEpurchasingReviewMutationResult = NonNullable<Awaited<ReturnType<typeof completeEpurchasingReview>>>
-
+    export type CompleteEpurchasingReviewMutationBody = BodyType<ReviewCompletionInput>
     export type CompleteEpurchasingReviewMutationError = ErrorType<unknown>
-    export type CompleteEpurchasingReviewMutationVariables = {id: number;params: CompleteEpurchasingReviewParams}
+    export type CompleteEpurchasingReviewMutationVariables = {data: BodyType<ReviewCompletionInput>}
 
     /**
  * @summary Mark an e-purchasing review item complete

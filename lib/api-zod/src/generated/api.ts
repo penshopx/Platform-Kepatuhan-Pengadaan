@@ -199,12 +199,9 @@ export const ListEpurchasingReviewsResponse = zod.array(ListEpurchasingReviewsRe
 /**
  * @summary Mark an e-purchasing review item complete
  */
-export const CompleteEpurchasingReviewParams = zod.object({
-  "id": zod.coerce.number().int()
-})
-
-export const CompleteEpurchasingReviewQueryParams = zod.object({
-  "item": zod.coerce.number().int()
+export const CompleteEpurchasingReviewBody = zod.object({
+  "reviewId": zod.number().int(),
+  "itemId": zod.number().int()
 })
 
 export const CompleteEpurchasingReviewResponse = zod.object({

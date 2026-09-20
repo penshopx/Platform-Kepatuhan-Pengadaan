@@ -8,7 +8,6 @@
 
 export * from './activity';
 export * from './budgetBucket';
-export * from './completeEpurchasingReviewParams';
 export * from './dashboard';
 export * from './epurchasingReview';
 export * from './healthStatus';
@@ -20,4 +19,5 @@ export * from './packageUpdate';
 export * from './procurementPackage';
 export * from './procurementPackageDetail';
 export * from './regulation';
+export * from './reviewCompletionInput';
 export * from './reviewItem';

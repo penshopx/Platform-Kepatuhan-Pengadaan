@@ -107,6 +107,11 @@ export interface EpurchasingReview {
   items: ReviewItem[];
 }
 
+export interface ReviewCompletionInput {
+  reviewId: number;
+  itemId: number;
+}
+
 export interface Activity {
   id: number;
   actor: string;
@@ -119,9 +124,5 @@ export interface Activity {
 export type ListPackagesParams = {
 status?: string;
 search?: string;
-};
-
-export type CompleteEpurchasingReviewParams = {
-item: number;
 };
 

@@ -1,10 +1,11 @@
-# [Project name]
+# Procurement Compliance Platform
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Platform pendamping kepatuhan pengadaan untuk Pemerintah dan kebijakan internal BUMN/BUMD, berbasis Perpres 46 Tahun 2025.
 
 ## Run & Operate
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/procurement-compliance run dev` — run the web app through its managed workflow
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
@@ -22,23 +23,35 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- API contract: `lib/api-spec/openapi.yaml`
+- Procurement database schema: `lib/db/src/schema/procurement.ts`
+- API routes: `artifacts/api-server/src/routes/procurement.ts`
+- Web app: `artifacts/procurement-compliance/src`
+- Theme tokens: `artifacts/procurement-compliance/src/index.css`
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Government procurement uses Perpres 46/2025 as its baseline.
+- BUMN/BUMD support is modeled as configurable internal policy packs, not as an automatic claim that every process is directly governed by the same Perpres.
+- The product is a preparation, compliance, and audit companion; it does not replace SPSE.
+- API contracts are defined OpenAPI-first and consumed through generated hooks and Zod schemas.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Dashboard for package volume, budget, compliance, and method distribution
+- Procurement package registry, creation, detail, stage, document, and status management
+- Interactive e-purchasing review workpapers based on MCP-style controls
+- Regulatory reference library and audit activity timeline
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Use Indonesian for product copy and collaboration.
+- Prefer high-contrast dark/black and light-blue interfaces with bright, legible text.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Run API codegen after every OpenAPI change.
+- Rebuild shared TypeScript libraries after changing the database schema before checking API server types.
 
 ## Pointers
 

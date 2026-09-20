@@ -151,22 +151,17 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EpurchasingReview"
-  /reviews/epurchasing/{id}/complete:
+  /reviews/epurchasing/complete:
     post:
       operationId: completeEpurchasingReview
       tags: [reviews]
       summary: Mark an e-purchasing review item complete
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-        - name: item
-          in: query
-          required: true
-          schema:
-            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewCompletionInput"
       responses:
         "200":
           description: Updated review workpaper
@@ -401,6 +396,14 @@ components:
           type: string
         completed:
           type: boolean
+    ReviewCompletionInput:
+      type: object
+      required: [reviewId, itemId]
+      properties:
+        reviewId:
+          type: integer
+        itemId:
+          type: integer
     Activity:
       type: object
       required: [id, actor, action, target, timestamp, tone]

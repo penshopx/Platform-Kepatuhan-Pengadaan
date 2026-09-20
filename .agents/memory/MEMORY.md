@@ -1,0 +1,1 @@
+- [Legal rule authority](legal-rule-authority.md) — classify rules by source authority and never hard-code local thresholds from presentation examples.

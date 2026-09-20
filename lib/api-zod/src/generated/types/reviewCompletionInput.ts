@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type CompleteEpurchasingReviewParams = {
-item: number;
-};
+export interface ReviewCompletionInput {
+  reviewId: number;
+  itemId: number;
+}

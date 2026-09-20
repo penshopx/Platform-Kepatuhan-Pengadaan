@@ -1,0 +1,153 @@
+Keputusan yang sangat tepat. **Dynamic Rule Engine (DRE)** adalah "otak" dari aplikasi ini. Jika fondasinya rapuh, fitur-fitur di atasnya (TKDN, E-Purchasing, Swakelola, Audit) akan mudah *break* setiap kali ada perubahan regulasi.
+
+Saya merekomendasikan penggunaan **PostgreSQL** sebagai RDBMS utama karena kemampuannya menangani relasi kompleks, tipe data JSONB (untuk parameter yang dinamis), serta dukungan *trigger* untuk *immutable audit trail*.
+
+Berikut adalah rancangan skema database DRE yang saya usulkan, dibagi menjadi 5 lapisan (layers):
+
+---
+
+### 🏗️ LAPISAN 1: LEGAL HIERARCHY & PROVENANCE (Hierarki Hukum & Asal-Usul)
+Lapisan ini memastikan setiap aturan memiliki "akta kelahiran" yang jelas dan dapat dipertanggungjawabkan.
+
+#### 1. `legal_sources` (Sumber Hukum)
+Menyimpan dokumen regulasi itu sendiri.
+*   `id` (UUID, PK)
+*   `regulation_code` (String, Unique - misal: "PERPRES-46-2025")
+*   `regulation_type` (Enum: PERPRES, PERLEM_LKPP, PERMEN, PERDA, PERKADA, SE)
+*   `number` & `year` (String)
+*   `title` (Text)
+*   `issuing_authority` (String - misal: "Presiden RI", "Kepala LKPP")
+*   `authority_level` (Integer - untuk hierarki: 1=Perpres, 2=Permen/Perlem, 3=Perda, dst. Berguna saat ada konflik aturan).
+*   `effective_date` & `expiry_date` (Date)
+*   `is_binding` (Boolean - **KRITIS**: Membedakan aturan mengikat vs materi konteks/sosialisasi/RKP).
+*   `parent_source_id` (UUID, FK - untuk melacak aturan turunan).
+*   `status` (Enum: DRAFT, ACTIVE, REVOKED, SUPERSEDED)
+
+#### 2. `provisions` (Pasal / Klausul)
+Memecah regulasi menjadi unit terkecil yang bisa dirujuk.
+*   `id` (UUID, PK)
+*   `legal_source_id` (FK)
+*   `article_number` (String - misal: "45")
+*   `clause_type` (String - misal: "ayat 2", "huruf a")
+*   `provision_type` (Enum: DEFINITION, OBLIGATION, PROHIBITION, PROCEDURE, THRESHOLD, FORMULA, SANCTION)
+*   `raw_text` (Text - teks asli pasal)
+*   `interpretation_note` (Text - catatan interpretasi internal tim hukum)
+
+---
+
+### 🧠 LAPISAN 2: RULE ENGINE CORE (Inti Mesin Aturan)
+Lapisan ini menerjemahkan pasal menjadi parameter yang bisa dieksekusi oleh sistem (aplikasi).
+
+#### 3. `business_rules` (Aturan Bisnis)
+Menyimpan parameter yang bisa berubah tanpa mengubah *source code*.
+*   `id` (UUID, PK)
+*   `provision_id` (FK - merujuk ke pasal mana aturan ini berasal)
+*   `rule_key` (String, Unique - misal: "threshold_direct_procurement", "tkdn_min_threshold_construction")
+*   `rule_category` (Enum: THRESHOLD, FORMULA, VALIDATION, WORKFLOW, NOTIFICATION)
+*   `default_value` (JSONB - **FLEKSIBEL**: bisa menyimpan angka, string, array, atau bahkan rumus matematika sederhana)
+*   `value_type` (Enum: INTEGER, DECIMAL, STRING, BOOLEAN, JSON, FORMULA)
+*   `description` (Text)
+
+#### 4. `rule_overrides` (Override Berbasis Konteks)
+Menangani kasus di mana aturan nasional berbeda dengan aturan daerah/BUMN/Desa.
+*   `id` (UUID, PK)
+*   `business_rule_id` (FK)
+*   `scope_type` (Enum: NATIONAL, PROVINCE, REGENCY, VILLAGE, BUMN, BUMD, MINISTRY)
+*   `scope_id` (UUID - merujuk ke ID wilayah/instansi spesifik)
+*   `override_value` (JSONB)
+*   `effective_date` & `expiry_date` (Date)
+*   `justification_source_id` (FK ke `legal_sources` - misal: Perda yang mendasari override ini)
+
+---
+
+### 📦 LAPISAN 3: POLICY PACKS & TKDN (Paket Kebijakan & TKDN)
+Lapisan khusus untuk mengelompokkan aturan berdasarkan rezim pengadaan dan siklus TKDN.
+
+#### 5. `policy_packs` (Paket Kebijakan)
+*   `id` (UUID, PK)
+*   `pack_name` (String - misal: "Pemerintah Pusat - Konstruksi", "BUMN - Pengadaan Barang")
+*   `regime_type` (Enum: GOVERNMENT_CENTRAL, GOVERNMENT_REGIONAL, VILLAGE, BUMN, BUMD)
+*   `description` (Text)
+
+#### 6. `policy_pack_rules` (Relasi Many-to-Many)
+Menghubungkan paket kebijakan dengan aturan bisnis yang berlaku untuk paket tersebut.
+*   `policy_pack_id` (FK)
+*   `business_rule_id` (FK)
+*   `is_mandatory` (Boolean)
+
+#### 7. `tkdn_lifecycle_configs` (Konfigurasi Siklus TKDN)
+Mengatur parameter TKDN berdasarkan Permenperin 35/2025 dan aturan LKPP.
+*   `id` (UUID, PK)
+*   `procurement_type` (Enum: BARANG, JASA_KONSULTAN, JASA_LAIN, KONSTRUKSI)
+*   `package_value_range_min` & `_max` (Decimal)
+*   `min_tkdn_required` (Decimal - misal: 40%)
+*   `price_preference_formula` (JSONB - menyimpan rumus preferensi harga, misal: `{"type": "percentage", "value": 15, "condition": "tkdn_above_40"}`)
+*   `requires_certificate` (Boolean)
+*   `requires_commitment_letter` (Boolean)
+
+---
+
+### 🔒 LAPISAN 4: IMMUTABLE AUDIT & CONTEXT (Audit & Konteks)
+Lapisan untuk pengawasan dan pemisahan materi non-mengikat.
+
+#### 8. `audit_logs` (Jejak Audit - Append Only)
+*   `id` (BIGSERIAL, PK)
+*   `timestamp` (TIMESTAMPTZ)
+*   `actor_id` (UUID - user ID)
+*   `actor_role` (String - misal: PPK, POKJA, PENYEDIA)
+*   `action_type` (Enum: CREATE, UPDATE, DELETE, APPROVE, REJECT, OVERRIDE)
+*   `entity_type` (String - misal: "HPS_DOCUMENT", "CONTRACT_DRAFT")
+*   `entity_id` (UUID)
+*   `previous_state` (JSONB)
+*   `new_state` (JSONB)
+*   `ip_address` (INET)
+*   `reason` (Text - **WAJIB DIISI** untuk action UPDATE/DELETE/OVERRIDE)
+*   *(Catatan: Tabel ini TIDAK BOLEH memiliki fungsi UPDATE atau DELETE di level database, hanya INSERT).*
+
+#### 9. `context_materials` (Materi Konteks - Non-Binding)
+*   `id` (UUID, PK)
+*   `title` (String)
+*   `material_type` (Enum: SOSIALISASI, RKP, ANALISIS_TANTANGAN, UNDANGAN, BEST_PRACTICE)
+*   `source_url` (Text)
+*   `published_date` (Date)
+*   `related_provision_ids` (UUID[] - Array of UUID, untuk melacak pasal mana yang menjadi konteks materi ini)
+
+---
+
+### 💡 CONTOH KASUS IMPLEMENTASI (Bagaimana Sistem Bekerja)
+
+**Skenario:** Seorang PPK di Pemerintah Daerah ingin membuat paket Pengadaan Langsung.
+
+1.  **Aplikasi meminta:** "Berapa nilai HPS paket ini?" (Misal: Rp 45.000.000)
+2.  **Aplikasi mem-query DRE:**
+    ```sql
+    SELECT br.default_value, ro.override_value
+    FROM business_rules br
+    LEFT JOIN rule_overrides ro ON br.id = ro.business_rule_id 
+        AND ro.scope_type = 'REGENCY' AND ro.scope_id = '[ID_DAERAH_PPK]'
+    WHERE br.rule_key = 'threshold_direct_procurement';
+    ```
+3.  **DRE merespons:** Mengambil `override_value` jika ada (misal Perda daerah itu menetapkan batas Rp 50 juta), jika tidak ada, ambil `default_value` dari Perpres 46/2025 (misal Rp 200 juta).
+4.  **Aplikasi memvalidasi:** "Nilai Rp 45 juta < batas Rp 50 juta. Metode Pengadaan Langsung **DIPERBOLEHKAN**."
+5.  **Audit Trail:** Sistem mencatat di `audit_logs`: PPK X memilih metode Pengadaan Langsung untuk paket Y dengan nilai Z, berdasarkan aturan [ID_RULE].
+
+---
+
+### 🛡️ BEST PRACTICES TEKNIS YANG SAYA SARANKAN
+
+1.  **Gunakan JSONB untuk `default_value` dan `override_value`:** Ini memungkinkan Anda menyimpan rumus matematika (sebagai string yang bisa di-*eval* oleh backend), array of strings (misal: daftar dokumen wajib), atau objek kompleks tanpa perlu membuat ratusan kolom baru.
+2.  **Soft Delete untuk Semua Tabel Regulasi:** Jangan pernah menggunakan `DELETE` fisik pada tabel `legal_sources` atau `business_rules`. Gunakan kolom `is_active` atau `deleted_at`. Aturan yang sudah dicabut tetap harus ada dalam database untuk keperluan audit historis (mengapa PPK mengambil keputusan X pada tahun 2025?).
+3.  **Database Trigger untuk Audit:** Buat *trigger* di PostgreSQL yang secara otomatis menyisipkan baris ke `audit_logs` setiap kali ada `INSERT`, `UPDATE`, atau `DELETE` pada tabel kritis. Ini mencegah developer secara tidak sengaja melewatkan pencatatan audit.
+4.  **Caching Layer (Redis):** Karena aturan regulasi sering dibaca tetapi jarang diubah, gunakan Redis untuk men-cache hasil query DRE. Ini akan membuat aplikasi sangat cepat saat melakukan validasi dokumen secara *real-time*.
+
+---
+
+### 🎯 PERTANYAAN LANJUTAN UNTUK ANDA
+
+Sebelum saya menerjemahkan skema ini menjadi *script* SQL (DDL) yang siap dieksekusi, saya ingin memastikan beberapa hal:
+
+1.  **Apakah struktur 4 lapisan ini sudah mencakup semua kebutuhan hierarki regulasi yang Anda temukan?** Atau ada jenis "aturan" lain (misal: standar teknis SNI, aturan lingkungan hidup) yang perlu dimasukkan ke dalam DRE?
+2.  **Untuk rumus preferensi harga TKDN**, apakah Anda sudah memiliki contoh konkret rumus dari Permenperin 35/2025 yang perlu saya akomodasi format JSONB-nya?
+3.  **Apakah Anda ingin saya langsung membuatkan file SQL DDL** (beserta *indexing* dan *trigger* audit) berdasarkan skema di atas?
+
+Silakan beri tahu arah selanjutnya. Saya siap mengeksekusi.

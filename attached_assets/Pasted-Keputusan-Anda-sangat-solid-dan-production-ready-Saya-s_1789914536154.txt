@@ -1,0 +1,784 @@
+Keputusan Anda **sangat solid dan production-ready**. Saya sepenuhnya menyelaraskan diri dengan semua koreksi dan arahan teknis Anda. Berikut adalah implementasi lengkap yang siap dieksekusi.
+
+---
+
+## 📦 IMPLEMENTASI LENGKAP: DRIZZLE + POSTGRESQL
+
+### 1. STRUKTUR FOLDER YANG DISARANKAN
+
+```
+src/
+├── db/
+│   ├── schema/
+│   │   ├── legal-sources.ts
+│   │   ├── business-rules.ts
+│   │   ├── policy-packs.ts
+│   │   ├── decisions.ts
+│   │   └── audit.ts
+│   ├── migrations/
+│   │   ├── 0001_initial_schema.sql
+│   │   └── 0002_audit_triggers.sql
+│   └── seed/
+│       └── initial-regulations.ts
+├── rules/
+│   ├── ast/
+│   │   ├── types.ts
+│   │   ├── validator.ts
+│   │   └── evaluator.ts
+│   └── engine/
+│       ├── evaluator.ts
+│       └── publisher.ts
+└── api/
+    └── rules/
+        └── evaluate.ts
+```
+
+---
+
+### 2. SKEMA DRIZZLE LENGKAP
+
+#### `src/db/schema/legal-sources.ts`
+
+```typescript
+import { pgTable, uuid, varchar, text, integer, date, boolean, timestamp, unique } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+
+export const legalSources = pgTable('legal_sources', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  regulationCode: varchar('regulation_code', { length: 100 }).notNull().unique(),
+  regulationType: varchar('regulation_type', { length: 50 }).notNull(), // PERPRES, PERLEM, PERMEN, SNI, ISO, PERDA, dll
+  number: varchar('number', { length: 100 }).notNull(),
+  year: integer('year').notNull(),
+  title: text('title').notNull(),
+  issuingAuthority: varchar('issuing_authority', { length: 255 }).notNull(),
+  // authority_level hanya metadata pengurutan, bukan penentu konflik otomatis
+  authorityLevel: integer('authority_level').notNull(),
+  effectiveDate: date('effective_date', { mode: 'date' }).notNull(),
+  expiryDate: date('expiry_date', { mode: 'date' }),
+  isBinding: boolean('is_binding').notNull().default(true),
+  parentSourceId: uuid('parent_source_id'),
+  status: varchar('status', { length: 20 }).notNull().default('ACTIVE'), // ACTIVE, REVOKED, SUPERSEDED
+  // Status verifikasi hukum
+  verificationStatus: varchar('verification_status', { length: 20 }).notNull().default('UNVERIFIED'), // UNVERIFIED, VERIFIED, NON_BINDING
+  verifiedBy: uuid('verified_by'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }), // soft delete
+}, (table) => {
+  return {
+    uniqueRegulationCode: unique('legal_sources_regulation_code_unique').on(table.regulationCode),
+  };
+});
+
+export const provisions = pgTable('provisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  legalSourceId: uuid('legal_source_id').notNull().references(() => legalSources.id),
+  articleNumber: varchar('article_number', { length: 50 }).notNull(),
+  clauseType: varchar('clause_type', { length: 50 }), // ayat, huruf, angka, dll
+  provisionType: varchar('provision_type', { length: 50 }).notNull(), // DEFINITION, OBLIGATION, PROCEDURE, THRESHOLD, FORMULA, dll
+  rawText: text('raw_text').notNull(),
+  interpretationNote: text('interpretation_note'),
+  sourceCategory: varchar('source_category', { length: 50 }).notNull().default('REGULATION'), // REGULATION, TECHNICAL_STANDARD, ENVIRONMENTAL, SECTORAL
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+});
+
+export const legalSourcesRelations = relations(legalSources, ({ many }) => ({
+  provisions: many(provisions),
+}));
+
+export const provisionsRelations = relations(provisions, ({ one }) => ({
+  legalSource: one(legalSources, {
+    fields: [provisions.legalSourceId],
+    references: [legalSources.id],
+  }),
+}));
+```
+
+#### `src/db/schema/business-rules.ts`
+
+```typescript
+import { pgTable, uuid, varchar, text, decimal, date, boolean, timestamp, jsonb, unique } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+import { provisions } from './legal-sources';
+
+export const businessRules = pgTable('business_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  provisionId: uuid('provision_id').notNull().references(() => provisions.id),
+  ruleKey: varchar('rule_key', { length: 100 }).notNull(),
+  ruleCategory: varchar('rule_category', { length: 50 }).notNull(), // THRESHOLD, FORMULA, VALIDATION, WORKFLOW
+  defaultValue: jsonb('default_value'),
+  valueType: varchar('value_type', { length: 20 }).notNull(), // INTEGER, DECIMAL, STRING, BOOLEAN, JSON, FORMULA
+  formulaAst: jsonb('formula_ast'), // AST terstruktur, hanya jika ruleCategory = 'FORMULA'
+  description: text('description'),
+  // Versi aturan - immutable, update membuat versi baru
+  version: integer('version').notNull().default(1),
+  isActive: boolean('is_active').notNull().default(true),
+  supersededBy: uuid('superseded_by'), // referensi ke versi baru jika ada
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (table) => {
+  return {
+    uniqueRuleKeyVersion: unique('business_rules_key_version_unique').on(table.ruleKey, table.version),
+  };
+});
+
+export const ruleConditions = pgTable('rule_conditions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  businessRuleId: uuid('business_rule_id').notNull().references(() => businessRules.id),
+  entityType: varchar('entity_type', { length: 50 }), // BARANG, JASA_KONSULTAN, KONSTRUKSI
+  fundingSource: varchar('funding_source', { length: 50 }), // APBN, APBD, DN, HIBAH
+  procurementMethod: varchar('procurement_method', { length: 50 }), // TENDER, E_PURCHASING, DIRECT
+  packageValueMin: decimal('package_value_min', { precision: 20, scale: 2 }),
+  packageValueMax: decimal('package_value_max', { precision: 20, scale: 2 }),
+  scopeType: varchar('scope_type', { length: 20 }), // NATIONAL, PROVINCE, REGENCY, VILLAGE, BUMN
+  scopeId: uuid('scope_id'),
+  effectiveDate: date('effective_date', { mode: 'date' }).notNull(),
+  expiryDate: date('expiry_date', { mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const ruleOverrides = pgTable('rule_overrides', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  businessRuleId: uuid('business_rule_id').notNull().references(() => businessRules.id),
+  scopeType: varchar('scope_type', { length: 20 }).notNull(),
+  scopeId: uuid('scope_id').notNull(),
+  overrideValue: jsonb('override_value'),
+  overrideFormulaAst: jsonb('override_formula_ast'),
+  effectiveDate: date('effective_date', { mode: 'date' }).notNull(),
+  expiryDate: date('expiry_date', { mode: 'date' }),
+  justificationSourceId: uuid('justification_source_id').references(() => provisions.id),
+  priority: integer('priority').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const businessRulesRelations = relations(businessRules, ({ one, many }) => ({
+  provision: one(provisions, {
+    fields: [businessRules.provisionId],
+    references: [provisions.id],
+  }),
+  conditions: many(ruleConditions),
+  overrides: many(ruleOverrides),
+}));
+```
+
+#### `src/db/schema/policy-packs.ts`
+
+```typescript
+import { pgTable, uuid, varchar, text, timestamp, jsonb, unique } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+import { businessRules, ruleConditions } from './business-rules';
+
+export const policyPacks = pgTable('policy_packs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  packName: varchar('pack_name', { length: 255 }).notNull(),
+  regimeType: varchar('regime_type', { length: 50 }).notNull(), // GOVERNMENT_CENTRAL, GOVERNMENT_REGIONAL, VILLAGE, BUMN, BUMD
+  description: text('description'),
+  version: varchar('version', { length: 20 }).notNull(), // "1.0.0"
+  status: varchar('status', { length: 20 }).notNull().default('DRAFT'), // DRAFT, REVIEWED, PUBLISHED, RETIRED
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  publishedBy: uuid('published_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => {
+  return {
+    uniquePackVersion: unique('policy_pack_version_unique').on(table.packName, table.version),
+  };
+});
+
+export const policyPackRules = pgTable('policy_pack_rules', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  policyPackId: uuid('policy_pack_id').notNull().references(() => policyPacks.id),
+  businessRuleId: uuid('business_rule_id').notNull().references(() => businessRules.id),
+  ruleConditionId: uuid('rule_condition_id').references(() => ruleConditions.id),
+  isMandatory: boolean('is_mandatory').notNull().default(true),
+  // Snapshot terstruktur lengkap
+  snapshot: jsonb('snapshot').notNull(), // { conditions, value, formulaAst, source, provision, hash }
+  snapshotTakenAt: timestamp('snapshot_taken_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const policyPacksRelations = relations(policyPacks, ({ many }) => ({
+  rules: many(policyPackRules),
+}));
+```
+
+#### `src/db/schema/decisions.ts`
+
+```typescript
+import { pgTable, uuid, varchar, text, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { policyPacks } from './policy-packs';
+
+export const decisionReferences = pgTable('decision_references', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  entityType: varchar('entity_type', { length: 100 }).notNull(),
+  entityId: text('entity_id').notNull(), // text untuk fleksibilitas
+  policyPackId: uuid('policy_pack_id').notNull().references(() => policyPacks.id),
+  policyPackVersion: varchar('policy_pack_version', { length: 20 }).notNull(),
+  // Input evaluasi
+  evaluationInput: jsonb('evaluation_input').notNull(),
+  // Hasil evaluasi lengkap
+  evaluationResult: jsonb('evaluation_result').notNull(), // { matchedRules, values, formulas, results, sourceVerificationStatus }
+  // Snapshot tambahan
+  snapshot: jsonb('snapshot').notNull(), // { rules, sources, provisions, values, formulas, evaluatorVersion }
+  evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).defaultNow().notNull(),
+  evaluatedBy: uuid('evaluated_by'),
+  actorType: varchar('actor_type', { length: 20 }).notNull().default('USER'), // SYSTEM, USER, SERVICE
+});
+```
+
+#### `src/db/schema/audit.ts`
+
+```typescript
+import { pgTable, bigserial, varchar, text, timestamp, jsonb, uuid } from 'drizzle-orm/pg-core';
+import { decisionReferences } from './decisions';
+
+export const auditLogs = pgTable('audit_logs', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow().notNull(),
+  actorId: uuid('actor_id'), // nullable sementara
+  actorType: varchar('actor_type', { length: 20 }).notNull().default('USER'), // SYSTEM, USER, SERVICE
+  actorRole: varchar('actor_role', { length: 50 }).notNull(),
+  actionType: varchar('action_type', { length: 20 }).notNull(), // CREATE, UPDATE, DELETE, APPROVE, REJECT, OVERRIDE, PUBLISH
+  entityType: varchar('entity_type', { length: 100 }).notNull(),
+  entityId: text('entity_id').notNull(),
+  previousState: jsonb('previous_state'),
+  newState: jsonb('new_state'),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  reason: text('reason'),
+  decisionReferenceId: uuid('decision_reference_id').references(() => decisionReferences.id),
+});
+```
+
+---
+
+### 3. SQL MANUAL UNTUK TRIGGER & CONSTRAINT
+
+#### `src/db/migrations/0002_audit_triggers.sql`
+
+```sql
+-- Trigger untuk memastikan audit_logs hanya bisa INSERT
+CREATE OR REPLACE FUNCTION prevent_audit_log_modification()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'Audit logs cannot be modified or deleted';
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger BEFORE UPDATE
+CREATE TRIGGER prevent_audit_log_update
+BEFORE UPDATE ON audit_logs
+FOR EACH ROW
+EXECUTE FUNCTION prevent_audit_log_modification();
+
+-- Trigger BEFORE DELETE
+CREATE TRIGGER prevent_audit_log_delete
+BEFORE DELETE ON audit_logs
+FOR EACH ROW
+EXECUTE FUNCTION prevent_audit_log_modification();
+
+-- Trigger untuk auto-log perubahan pada tabel kritis
+CREATE OR REPLACE FUNCTION log_table_changes()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_id UUID;
+  v_actor_type VARCHAR(20);
+  v_reason TEXT;
+BEGIN
+  -- Ambil actor dari session variable (diset oleh aplikasi)
+  v_actor_id := current_setting('app.actor_id', true)::UUID;
+  v_actor_type := COALESCE(current_setting('app.actor_type', true), 'SYSTEM');
+  v_reason := current_setting('app.action_reason', true);
+
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, new_state, reason)
+    VALUES (v_actor_id, v_actor_type, 'SYSTEM', 'CREATE', TG_TABLE_NAME, NEW.id, to_jsonb(NEW), v_reason);
+    RETURN NEW;
+  ELSIF TG_OP = 'UPDATE' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, previous_state, new_state, reason)
+    VALUES (v_actor_id, v_actor_type, 'SYSTEM', 'UPDATE', TG_TABLE_NAME, NEW.id, to_jsonb(OLD), to_jsonb(NEW), v_reason);
+    RETURN NEW;
+  ELSIF TG_OP = 'DELETE' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, previous_state, reason)
+    VALUES (v_actor_id, v_actor_type, 'SYSTEM', 'DELETE', TG_TABLE_NAME, OLD.id, to_jsonb(OLD), v_reason);
+    RETURN OLD;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Terapkan trigger ke tabel kritis (contoh)
+CREATE TRIGGER audit_legal_sources
+AFTER INSERT OR UPDATE OR DELETE ON legal_sources
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_business_rules
+AFTER INSERT OR UPDATE OR DELETE ON business_rules
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_policy_packs
+AFTER INSERT OR UPDATE OR DELETE ON policy_packs
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+```
+
+---
+
+### 4. STRUKTUR AST & VALIDATOR
+
+#### `src/rules/ast/types.ts`
+
+```typescript
+export type AstNode = LiteralNode | ReferenceNode | OperatorNode | ConditionalNode;
+
+export interface LiteralNode {
+  type: 'literal';
+  value: number | string | boolean;
+}
+
+export interface ReferenceNode {
+  type: 'reference';
+  path: string; // hanya alfanumerik dan underscore
+}
+
+export interface OperatorNode {
+  type: 'operator';
+  operator: 'add' | 'subtract' | 'multiply' | 'divide' | 'min' | 'max' | 
+            'round' | 'floor' | 'ceil' | 'abs' | 'clamp' |
+            'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' |
+            'and' | 'or' | 'not' | 'coalesce';
+  operands: AstNode[];
+}
+
+export interface ConditionalNode {
+  type: 'conditional';
+  condition: AstNode; // harus boolean
+  then: AstNode;
+  else: AstNode;
+}
+
+export interface EvaluationContext {
+  [key: string]: number | string | boolean | null;
+}
+
+export interface EvaluationResult {
+  value: number | string | boolean;
+  referencedPaths: string[];
+  sourceVerificationStatus: 'VERIFIED' | 'UNVERIFIED' | 'NON_BINDING';
+}
+```
+
+#### `src/rules/ast/validator.ts`
+
+```typescript
+import { z } from 'zod';
+import { AstNode } from './types';
+
+const MAX_DEPTH = 10;
+const MAX_NODES = 100;
+const ALLOWED_OPERATORS = [
+  'add', 'subtract', 'multiply', 'divide', 'min', 'max',
+  'round', 'floor', 'ceil', 'abs', 'clamp',
+  'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
+  'and', 'or', 'not', 'coalesce'
+] as const;
+
+const LiteralNodeSchema: z.ZodType<any> = z.object({
+  type: z.literal('literal'),
+  value: z.union([z.number(), z.string(), z.boolean()])
+});
+
+const ReferenceNodeSchema: z.ZodType<any> = z.object({
+  type: z.literal('reference'),
+  path: z.string().regex(/^[a-zA-Z0-9_.]+$/, 'Path must be alphanumeric with underscores')
+});
+
+const OperatorNodeSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal('operator'),
+    operator: z.enum(ALLOWED_OPERATORS),
+    operands: z.array(AstNodeSchema).min(1)
+  })
+);
+
+const ConditionalNodeSchema: z.ZodType<any> = z.lazy(() =>
+  z.object({
+    type: z.literal('conditional'),
+    condition: AstNodeSchema,
+    then: AstNodeSchema,
+    else: AstNodeSchema
+  })
+);
+
+const AstNodeSchema: z.ZodType<any> = z.lazy(() =>
+  z.union([LiteralNodeSchema, ReferenceNodeSchema, OperatorNodeSchema, ConditionalNodeSchema])
+);
+
+export function validateAst(ast: any, allowedReferences?: string[]): { valid: boolean; error?: string } {
+  // Validasi struktur dasar
+  const parseResult = AstNodeSchema.safeParse(ast);
+  if (!parseResult.success) {
+    return { valid: false, error: `Invalid AST structure: ${parseResult.error.message}` };
+  }
+
+  // Validasi kedalaman dan jumlah node
+  const stats = calculateAstStats(ast);
+  if (stats.depth > MAX_DEPTH) {
+    return { valid: false, error: `AST depth ${stats.depth} exceeds maximum ${MAX_DEPTH}` };
+  }
+  if (stats.nodeCount > MAX_NODES) {
+    return { valid: false, error: `AST node count ${stats.nodeCount} exceeds maximum ${MAX_NODES}` };
+  }
+
+  // Validasi referensi yang diizinkan
+  if (allowedReferences) {
+    const refs = extractReferences(ast);
+    for (const ref of refs) {
+      if (!allowedReferences.includes(ref)) {
+        return { valid: false, error: `Reference '${ref}' is not allowed` };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+function calculateAstStats(node: any, depth: number = 0): { depth: number; nodeCount: number } {
+  let maxDepth = depth;
+  let nodeCount = 1;
+
+  if (node.type === 'operator') {
+    for (const operand of node.operands) {
+      const stats = calculateAstStats(operand, depth + 1);
+      maxDepth = Math.max(maxDepth, stats.depth);
+      nodeCount += stats.nodeCount;
+    }
+  } else if (node.type === 'conditional') {
+    const condStats = calculateAstStats(node.condition, depth + 1);
+    const thenStats = calculateAstStats(node.then, depth + 1);
+    const elseStats = calculateAstStats(node.else, depth + 1);
+    maxDepth = Math.max(maxDepth, condStats.depth, thenStats.depth, elseStats.depth);
+    nodeCount += condStats.nodeCount + thenStats.nodeCount + elseStats.nodeCount;
+  }
+
+  return { depth: maxDepth, nodeCount };
+}
+
+function extractReferences(node: any): string[] {
+  const refs: string[] = [];
+  
+  if (node.type === 'reference') {
+    refs.push(node.path);
+  } else if (node.type === 'operator') {
+    for (const operand of node.operands) {
+      refs.push(...extractReferences(operand));
+    }
+  } else if (node.type === 'conditional') {
+    refs.push(...extractReferences(node.condition));
+    refs.push(...extractReferences(node.then));
+    refs.push(...extractReferences(node.else));
+  }
+
+  return refs;
+}
+```
+
+#### `src/rules/ast/evaluator.ts`
+
+```typescript
+import { AstNode, EvaluationContext, EvaluationResult } from './types';
+
+export function evaluateAst(
+  ast: AstNode, 
+  context: EvaluationContext,
+  allowedReferences?: string[]
+): EvaluationResult {
+  const referencedPaths = new Set<string>();
+  
+  function evaluate(node: AstNode): number | string | boolean {
+    if (node.type === 'literal') {
+      return node.value;
+    }
+
+    if (node.type === 'reference') {
+      if (allowedReferences && !allowedReferences.includes(node.path)) {
+        throw new Error(`Reference '${node.path}' is not allowed`);
+      }
+      referencedPaths.add(node.path);
+      const value = context[node.path];
+      if (value === undefined || value === null) {
+        throw new Error(`Reference '${node.path}' not found in context`);
+      }
+      return value;
+    }
+
+    if (node.type === 'operator') {
+      const operands = node.operands.map(op => evaluate(op));
+      return evaluateOperator(node.operator, operands);
+    }
+
+    if (node.type === 'conditional') {
+      const condition = evaluate(node.condition);
+      if (typeof condition !== 'boolean') {
+        throw new Error('Conditional condition must evaluate to boolean');
+      }
+      return condition ? evaluate(node.then) : evaluate(node.else);
+    }
+
+    throw new Error('Invalid AST node');
+  }
+
+  const result = evaluate(ast);
+  
+  return {
+    value: result,
+    referencedPaths: Array.from(referencedPaths),
+    sourceVerificationStatus: 'VERIFIED' // Akan di-set oleh evaluator level tinggi
+  };
+}
+
+function evaluateOperator(operator: string, operands: any[]): number | string | boolean {
+  switch (operator) {
+    // Aritmatika
+    case 'add': return (operands[0] as number) + (operands[1] as number);
+    case 'subtract': return (operands[0] as number) - (operands[1] as number);
+    case 'multiply': return (operands[0] as number) * (operands[1] as number);
+    case 'divide':
+      if (operands[1] === 0) throw new Error('Division by zero');
+      return (operands[0] as number) / (operands[1] as number);
+    
+    // Agregasi
+    case 'min': return Math.min(...operands as number[]);
+    case 'max': return Math.max(...operands as number[]);
+    
+    // Numerik
+    case 'round': return Math.round(operands[0] as number);
+    case 'floor': return Math.floor(operands[0] as number);
+    case 'ceil': return Math.ceil(operands[0] as number);
+    case 'abs': return Math.abs(operands[0] as number);
+    case 'clamp': {
+      const value = operands[0] as number;
+      const min = operands[1] as number;
+      const max = operands[2] as number;
+      return Math.min(Math.max(value, min), max);
+    }
+    
+    // Perbandingan
+    case 'eq': return operands[0] === operands[1];
+    case 'neq': return operands[0] !== operands[1];
+    case 'gt': return (operands[0] as number) > (operands[1] as number);
+    case 'gte': return (operands[0] as number) >= (operands[1] as number);
+    case 'lt': return (operands[0] as number) < (operands[1] as number);
+    case 'lte': return (operands[0] as number) <= (operands[1] as number);
+    
+    // Logika
+    case 'and': return operands.every(op => op as boolean);
+    case 'or': return operands.some(op => op as boolean);
+    case 'not': return !(operands[0] as boolean);
+    
+    // Null handling
+    case 'coalesce':
+      for (const op of operands) {
+        if (op !== null && op !== undefined) return op;
+      }
+      return null;
+    
+    default:
+      throw new Error(`Unknown operator: ${operator}`);
+  }
+}
+```
+
+---
+
+### 5. LOGIKA PUBLIKASI & SNAPSHOT
+
+#### `src/rules/engine/publisher.ts`
+
+```typescript
+import { db } from '@/db';
+import { policyPacks, policyPackRules, businessRules, ruleConditions, legalSources, provisions } from '@/db/schema';
+import { eq, and } from 'drizzle-orm';
+import crypto from 'crypto';
+
+interface PublishResult {
+  success: boolean;
+  error?: string;
+  policyPackId?: string;
+}
+
+export async function publishPolicyPack(
+  policyPackId: string,
+  publishedBy: string
+): Promise<PublishResult> {
+  return await db.transaction(async (tx) => {
+    // 1. Ambil policy pack
+    const [pack] = await tx.select().from(policyPacks).where(eq(policyPacks.id, policyPackId));
+    
+    if (!pack) {
+      return { success: false, error: 'Policy pack not found' };
+    }
+
+    if (pack.status === 'PUBLISHED') {
+      return { success: false, error: 'Policy pack already published' };
+    }
+
+    // 2. Ambil semua aturan dalam pack
+    const packRules = await tx.select().from(policyPackRules).where(eq(policyPackRules.policyPackId, policyPackId));
+
+    // 3. Validasi: tidak boleh ada aturan mengikat yang UNVERIFIED
+    for (const packRule of packRules) {
+      if (!packRule.isMandatory) continue;
+
+      const [rule] = await tx.select().from(businessRules).where(eq(businessRules.id, packRule.businessRuleId));
+      const [provision] = await tx.select().from(provisions).where(eq(provisions.id, rule.provisionId));
+      const [source] = await tx.select().from(legalSources).where(eq(legalSources.id, provision.legalSourceId));
+
+      if (source.isBinding && source.verificationStatus === 'UNVERIFIED') {
+        return { 
+          success: false, 
+          error: `Cannot publish: Rule ${rule.ruleKey} references unverified binding source ${source.regulationCode}` 
+        };
+      }
+    }
+
+    // 4. Generate snapshot untuk setiap aturan
+    const now = new Date();
+    for (const packRule of packRules) {
+      const [rule] = await tx.select().from(businessRules).where(eq(businessRules.id, packRule.businessRuleId));
+      
+      let condition = null;
+      if (packRule.ruleConditionId) {
+        [condition] = await tx.select().from(ruleConditions).where(eq(ruleConditions.id, packRule.ruleConditionId));
+      }
+
+      const [provision] = await tx.select().from(provisions).where(eq(provisions.id, rule.provisionId));
+      const [source] = await tx.select().from(legalSources).where(eq(legalSources.id, provision.legalSourceId));
+
+      const snapshot = {
+        conditions: condition,
+        value: rule.defaultValue,
+        formulaAst: rule.formulaAst,
+        source: {
+          id: source.id,
+          regulationCode: source.regulationCode,
+          verificationStatus: source.verificationStatus,
+          isBinding: source.isBinding
+        },
+        provision: {
+          id: provision.id,
+          articleNumber: provision.articleNumber,
+          clauseType: provision.clauseType
+        },
+        hash: generateSnapshotHash(rule, condition, source)
+      };
+
+      await tx.update(policyPackRules)
+        .set({ 
+          snapshot,
+          snapshotTakenAt: now
+        })
+        .where(eq(policyPackRules.id, packRule.id));
+    }
+
+    // 5. Update status policy pack
+    await tx.update(policyPacks)
+      .set({
+        status: 'PUBLISHED',
+        publishedAt: now,
+        publishedBy,
+        updatedAt: now
+      })
+      .where(eq(policyPacks.id, policyPackId));
+
+    return { success: true, policyPackId };
+  });
+}
+
+function generateSnapshotHash(rule: any, condition: any, source: any): string {
+  const data = JSON.stringify({
+    ruleId: rule.id,
+    ruleKey: rule.ruleKey,
+    version: rule.version,
+    defaultValue: rule.defaultValue,
+    formulaAst: rule.formulaAst,
+    conditionId: condition?.id,
+    sourceId: source.id,
+    provisionId: rule.provisionId
+  });
+  
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+```
+
+---
+
+### 6. SEED AWAL (AMAN)
+
+#### `src/db/seed/initial-regulations.ts`
+
+```typescript
+import { db } from '@/db';
+import { legalSources, provisions } from '@/db/schema';
+
+export async function seedInitialRegulations() {
+  // SEED HANYA METADATA YANG BENAR-BENAR TERSEDIA
+  // Jangan generate teks pasal dari bahan paparan
+
+  const perpres46_2025 = await db.insert(legalSources).values({
+    regulationCode: 'PERPRES-46-2025',
+    regulationType: 'PERPRES',
+    number: '46',
+    year: 2025,
+    title: 'Pengadaan Barang/Jasa Pemerintah',
+    issuingAuthority: 'Presiden Republik Indonesia',
+    authorityLevel: 1,
+    effectiveDate: new Date('2025-01-01'),
+    isBinding: true,
+    status: 'ACTIVE',
+    verificationStatus: 'UNVERIFIED', // Belum diverifikasi
+  }).returning();
+
+  const permenperin35_2025 = await db.insert(legalSources).values({
+    regulationCode: 'PERMENPERIN-35-2025',
+    regulationType: 'PERMEN',
+    number: '35',
+    year: 2025,
+    title: 'Pedoman Perhitungan dan Sertifikasi TKDN',
+    issuingAuthority: 'Kementerian Perindustrian',
+    authorityLevel: 2,
+    effectiveDate: new Date('2025-01-01'),
+    isBinding: true,
+    status: 'ACTIVE',
+    verificationStatus: 'UNVERIFIED',
+  }).returning();
+
+  console.log('Seed completed. All sources are UNVERIFIED by default.');
+  console.log('Manual verification required before publishing policy packs.');
+}
+```
+
+---
+
+## 🎯 KESIMPULAN
+
+Implementasi ini mencakup:
+
+✅ **Drizzle sebagai sumber utama** untuk skema, relasi, dan tipe  
+✅ **SQL manual** untuk trigger append-only dan constraint audit  
+✅ **Copy-on-publish** dengan snapshot terstruktur lengkap + hash integritas  
+✅ **AST bertipe ketat** dengan validator Zod dan evaluator aman  
+✅ **Operator terbatas** termasuk conditional node khusus  
+✅ **Versi aturan immutable** (update membuat versi baru)  
+✅ **Seed awal aman** (hanya metadata, status UNVERIFIED)  
+✅ **Validasi publikasi** (gagal jika ada aturan mengikat UNVERIFIED)  
+✅ **Dua tingkat snapshot** (policy pack + decision reference)  
+✅ **Actor nullable sementara** dengan actorType  
+
+Apakah Anda ingin saya melanjutkan dengan:
+1. **Membuat file migrasi SQL lengkap** yang siap dijalankan?
+2. **Implementasi API endpoint** untuk evaluasi aturan?
+3. **Membuat antarmuka admin** untuk mengelola aturan dan verifikasi?
+
+Silakan beri tahu arah selanjutnya.

@@ -5,6 +5,8 @@ import {
   useCreatePolicyPack,
   useAddPolicyPackRule,
   useTransitionPolicyPack,
+  useComparePolicyPacks,
+  getComparePolicyPacksQueryKey,
   useListBusinessRules,
   getListPolicyPacksQueryKey,
   type PolicyPack,
@@ -19,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Archive, ChevronRight, Lock, Unlock, Zap, Ban, Layers } from "lucide-react";
+import { Plus, Archive, ChevronRight, Lock, Unlock, Zap, Ban, Layers, GitCompareArrows } from "lucide-react";
 import { format } from "date-fns";
 
 export default function PacksTab() {
@@ -36,6 +38,30 @@ export default function PacksTab() {
   const [selectedPack, setSelectedPack] = useState<PolicyPack | null>(null);
   const [isViewOpen, setIsViewOpen] = useState(false);
   const [isAddRuleOpen, setIsAddRuleOpen] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [basePackId, setBasePackId] = useState("");
+  const [targetPackId, setTargetPackId] = useState("");
+  const basePack = packs.find((pack) => pack.id === basePackId);
+  const comparablePacks = basePack
+    ? packs.filter(
+        (pack) =>
+          pack.id !== basePack.id &&
+          pack.packName === basePack.packName &&
+          pack.regimeType === basePack.regimeType,
+      )
+    : [];
+  const comparison = useComparePolicyPacks(
+    { baseId: basePackId, targetId: targetPackId },
+    {
+      query: {
+        queryKey: getComparePolicyPacksQueryKey({
+          baseId: basePackId,
+          targetId: targetPackId,
+        }),
+        enabled: Boolean(basePackId && targetPackId),
+      },
+    },
+  );
 
   const [newPack, setNewPack] = useState<Partial<PolicyPackInput>>({
     packName: "",
@@ -57,6 +83,7 @@ export default function PacksTab() {
       {
         onSuccess: (pack) => {
           queryClient.invalidateQueries({ queryKey: getListPolicyPacksQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getComparePolicyPacksQueryKey() });
           setSelectedPack(pack);
           setIsCreateOpen(false);
           toast({ title: "Berhasil", description: "Policy pack baru telah dibuat." });
@@ -99,6 +126,7 @@ export default function PacksTab() {
       {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getListPolicyPacksQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getComparePolicyPacksQueryKey() });
           setIsAddRuleOpen(false);
           toast({ title: "Berhasil", description: "Aturan ditambahkan ke dalam pack." });
           setNewRuleRef({ businessRuleId: "", ruleConditionId: "", isMandatory: true });
@@ -120,6 +148,7 @@ export default function PacksTab() {
       {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: getListPolicyPacksQueryKey() });
+          queryClient.invalidateQueries({ queryKey: getComparePolicyPacksQueryKey() });
           toast({ title: "Berhasil", description: `Status policy pack diubah menjadi ${status}.` });
           setIsViewOpen(false); // Close view to let list refresh
         },
@@ -148,6 +177,29 @@ export default function PacksTab() {
     }
   };
 
+  const openComparison = (pack?: PolicyPack) => {
+    const initialBase = pack ?? packs.find((candidate) =>
+      packs.some(
+        (other) =>
+          other.id !== candidate.id &&
+          other.packName === candidate.packName &&
+          other.regimeType === candidate.regimeType,
+      ),
+    );
+    setBasePackId(initialBase?.id ?? "");
+    const firstTarget = initialBase
+      ? packs.find(
+          (candidate) =>
+            candidate.id !== initialBase.id &&
+            candidate.packName === initialBase.packName &&
+            candidate.regimeType === initialBase.regimeType,
+        )
+      : undefined;
+    setTargetPackId(firstTarget?.id ?? "");
+    setIsCompareOpen(true);
+    queryClient.invalidateQueries({ queryKey: getComparePolicyPacksQueryKey() });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -156,6 +208,21 @@ export default function PacksTab() {
           <p className="text-sm text-muted-foreground">Gabungkan aturan bisnis menjadi satu versi rilis yang siap dieksekusi.</p>
         </div>
         
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={() => openComparison()}
+            disabled={!packs.some((pack) =>
+              packs.some(
+                (other) =>
+                  other.id !== pack.id &&
+                  other.packName === pack.packName &&
+                  other.regimeType === pack.regimeType,
+              ),
+            )}
+          >
+            <GitCompareArrows className="w-4 h-4 mr-2" /> Bandingkan Versi
+          </Button>
         <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
           <DialogTrigger asChild>
             <Button><Plus className="w-4 h-4 mr-2" /> Buat Pack Baru</Button>
@@ -215,6 +282,7 @@ export default function PacksTab() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pt-4">
@@ -278,6 +346,23 @@ export default function PacksTab() {
                     </DialogDescription>
                   </div>
                   <div className="flex gap-2">
+                    {packs.some(
+                      (pack) =>
+                        pack.id !== selectedPack.id &&
+                        pack.packName === selectedPack.packName &&
+                        pack.regimeType === selectedPack.regimeType,
+                    ) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setIsViewOpen(false);
+                          openComparison(selectedPack);
+                        }}
+                      >
+                        <GitCompareArrows className="w-4 h-4 mr-2" /> Bandingkan
+                      </Button>
+                    )}
                     {selectedPack.status === "DRAFT" && (
                       <Button size="sm" variant="outline" className="text-blue-500 border-blue-500/30 hover:bg-blue-500/10" onClick={() => handleTransition(selectedPack.id, "REVIEWED")}>
                         <ChevronRight className="w-4 h-4 mr-2" /> Ajukan Review
@@ -405,6 +490,168 @@ export default function PacksTab() {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isCompareOpen} onOpenChange={setIsCompareOpen}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GitCompareArrows className="w-5 h-5 text-primary" />
+              Bandingkan Versi Policy Pack
+            </DialogTitle>
+            <DialogDescription>
+              Perbandingan ini hanya membaca data. Versi terbit memakai snapshot,
+              sedangkan versi yang belum terbit memakai data saat ini.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
+            <div className="space-y-2">
+              <Label>Versi dasar</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={basePackId}
+                onChange={(event) => {
+                  const nextBaseId = event.target.value;
+                  const nextBase = packs.find((pack) => pack.id === nextBaseId);
+                  setBasePackId(nextBaseId);
+                  const nextTarget = nextBase
+                    ? packs.find(
+                        (pack) =>
+                          pack.id !== nextBase.id &&
+                          pack.packName === nextBase.packName &&
+                          pack.regimeType === nextBase.regimeType,
+                      )
+                    : undefined;
+                  setTargetPackId(nextTarget?.id ?? "");
+                }}
+              >
+                {packs
+                  .filter((pack) =>
+                    packs.some(
+                      (other) =>
+                        other.id !== pack.id &&
+                        other.packName === pack.packName &&
+                        other.regimeType === pack.regimeType,
+                    ),
+                  )
+                  .map((pack) => (
+                    <option key={pack.id} value={pack.id}>
+                      {pack.packName} · {pack.regimeType} · v{pack.version} ({pack.status})
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Versi pembanding</Label>
+              <select
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={targetPackId}
+                onChange={(event) => setTargetPackId(event.target.value)}
+              >
+                {comparablePacks.map((pack) => (
+                  <option key={pack.id} value={pack.id}>
+                    v{pack.version} ({pack.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {comparison.isLoading ? (
+            <div className="py-12 text-center text-muted-foreground">
+              Membandingkan versi...
+            </div>
+          ) : comparison.isError ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+              {(comparison.error as any)?.data?.error || "Perbandingan gagal dimuat."}
+            </div>
+          ) : comparison.data ? (
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 gap-4">
+                {[comparison.data.base, comparison.data.target].map((version) => (
+                  <div key={version.id} className="rounded-lg border border-border/60 bg-secondary/10 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-mono font-bold text-primary">v{version.version}</span>
+                      <Badge variant="outline">{version.status}</Badge>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Sumber: {version.dataSource === "SNAPSHOT" ? "Snapshot publikasi" : "Data aturan saat ini"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-center">
+                  <div className="text-2xl font-bold text-emerald-600">{comparison.data.summary.added}</div>
+                  <div className="text-xs text-muted-foreground">Ditambahkan</div>
+                </div>
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-center">
+                  <div className="text-2xl font-bold text-destructive">{comparison.data.summary.removed}</div>
+                  <div className="text-xs text-muted-foreground">Dihapus</div>
+                </div>
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-center">
+                  <div className="text-2xl font-bold text-amber-600">{comparison.data.summary.changed}</div>
+                  <div className="text-xs text-muted-foreground">Diubah</div>
+                </div>
+              </div>
+
+              {comparison.data.changes.length === 0 ? (
+                <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">
+                  Tidak ada perubahan aturan atau kondisi.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {comparison.data.changes.map((change, changeIndex) => (
+                    <div key={`${change.ruleKey}-${change.changeType}-${changeIndex}`} className="rounded-lg border border-border/60 overflow-hidden">
+                      <div className="flex items-center justify-between gap-3 bg-secondary/20 px-4 py-3">
+                        <span className="font-mono font-semibold text-primary">{change.ruleKey}</span>
+                        <div className="flex items-center gap-2">
+                          {change.changedSections.map((section) => (
+                            <Badge key={section} variant="outline" className="text-[10px]">
+                              {section === "CONDITION" ? "KONDISI" : section === "RULE" ? "ATURAN" : section}
+                            </Badge>
+                          ))}
+                          <Badge
+                            className={
+                              change.changeType === "ADDED"
+                                ? "bg-emerald-600"
+                                : change.changeType === "REMOVED"
+                                  ? "bg-destructive"
+                                  : "bg-amber-600"
+                            }
+                          >
+                            {change.changeType === "ADDED" ? "DITAMBAHKAN" : change.changeType === "REMOVED" ? "DIHAPUS" : "DIUBAH"}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border/60 text-xs">
+                        {[change.before, change.after].map((content, index) => (
+                          <div key={index} className="p-4 min-w-0">
+                            <div className="mb-2 font-semibold text-muted-foreground">
+                              {index === 0 ? `Sebelum · v${comparison.data.base.version}` : `Sesudah · v${comparison.data.target.version}`}
+                            </div>
+                            {content ? (
+                              <div className="space-y-2">
+                                <p>Versi aturan: <strong>v{content.ruleVersion}</strong> · {content.isMandatory ? "Wajib" : "Opsional"}</p>
+                                <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-background/70 p-2 text-[11px]">
+                                  {JSON.stringify({ rule: content.rule, condition: content.condition }, null, 2)}
+                                </pre>
+                              </div>
+                            ) : (
+                              <p className="italic text-muted-foreground">Tidak ada pada versi ini.</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>

@@ -351,6 +351,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PolicyPack"
+  /policy-packs/compare:
+    get:
+      operationId: comparePolicyPacks
+      tags: [policy-packs]
+      summary: Compare two versions of the same policy pack
+      description: Read-only comparison using immutable snapshots for published versions and current rule data for unpublished versions.
+      security:
+        - ClerkSession: []
+      parameters:
+        - name: baseId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: targetId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Policy pack comparison
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyPackComparison"
+        "400":
+          description: Invalid comparison or packs do not share the same name and regime
+        "404":
+          description: One or both policy packs were not found
   /policy-packs/{id}/rules:
     post:
       operationId: addPolicyPackRule
@@ -893,6 +921,65 @@ components:
         businessRuleId: { type: string, format: uuid }
         ruleConditionId: { type: string, format: uuid }
         isMandatory: { type: boolean }
+    PolicyPackComparisonVersion:
+      type: object
+      required: [id, packName, regimeType, version, status, dataSource]
+      properties:
+        id: { type: string, format: uuid }
+        packName: { type: string }
+        regimeType: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [DRAFT, REVIEWED, PUBLISHED, RETIRED] }
+        dataSource: { type: string, enum: [SNAPSHOT, CURRENT] }
+    PolicyPackComparisonRuleContent:
+      type: object
+      required: [ruleKey, ruleVersion, isMandatory, rule, condition, source, provision]
+      properties:
+        ruleKey: { type: string }
+        ruleVersion: { type: integer }
+        isMandatory: { type: boolean }
+        rule: { type: object, additionalProperties: true }
+        condition:
+          type: [object, "null"]
+          additionalProperties: true
+        source: { type: object, additionalProperties: true }
+        provision: { type: object, additionalProperties: true }
+    PolicyPackComparisonChange:
+      type: object
+      required: [ruleKey, changeType, changedSections, before, after]
+      properties:
+        ruleKey: { type: string }
+        changeType: { type: string, enum: [ADDED, REMOVED, CHANGED] }
+        changedSections:
+          type: array
+          items: { type: string, enum: [RULE, CONDITION, SOURCE, PROVISION] }
+        before:
+          anyOf:
+            - $ref: "#/components/schemas/PolicyPackComparisonRuleContent"
+            - type: "null"
+        after:
+          anyOf:
+            - $ref: "#/components/schemas/PolicyPackComparisonRuleContent"
+            - type: "null"
+    PolicyPackComparison:
+      type: object
+      required: [base, target, summary, changes]
+      properties:
+        base:
+          $ref: "#/components/schemas/PolicyPackComparisonVersion"
+        target:
+          $ref: "#/components/schemas/PolicyPackComparisonVersion"
+        summary:
+          type: object
+          required: [added, removed, changed]
+          properties:
+            added: { type: integer, minimum: 0 }
+            removed: { type: integer, minimum: 0 }
+            changed: { type: integer, minimum: 0 }
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyPackComparisonChange"
     PolicyPackTransition:
       type: object
       required: [status]

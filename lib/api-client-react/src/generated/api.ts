@@ -23,6 +23,7 @@ import type {
   Activity,
   BusinessRule,
   BusinessRuleInput,
+  ComparePolicyPacksParams,
   Dashboard,
   EpurchasingReview,
   HealthStatus,
@@ -33,6 +34,7 @@ import type {
   PackageInput,
   PackageUpdate,
   PolicyPack,
+  PolicyPackComparison,
   PolicyPackInput,
   PolicyPackRuleInput,
   PolicyPackTransition,
@@ -1636,6 +1638,91 @@ export const useCreatePolicyPack = <TError = ErrorType<unknown>,
       > => {
       return useMutation(getCreatePolicyPackMutationOptions(options));
     }
+
+export const getComparePolicyPacksUrl = (params: ComparePolicyPacksParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/policy-packs/compare?${stringifiedParams}` : `/api/policy-packs/compare`
+}
+
+/**
+ * Read-only comparison using immutable snapshots for published versions and current rule data for unpublished versions.
+ * @summary Compare two versions of the same policy pack
+ */
+export const comparePolicyPacks = async (params: ComparePolicyPacksParams, options?: Parameters<typeof customFetch>[1]): Promise<PolicyPackComparison> => {
+
+  return customFetch<PolicyPackComparison>(getComparePolicyPacksUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getComparePolicyPacksQueryKey = (params?: ComparePolicyPacksParams,) => {
+    return [
+    `/api/policy-packs/compare`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getComparePolicyPacksQueryOptions = <TData = Awaited<ReturnType<typeof comparePolicyPacks>>, TError = ErrorType<void>>(params: ComparePolicyPacksParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof comparePolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getComparePolicyPacksQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof comparePolicyPacks>>> = ({ signal }) => comparePolicyPacks(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof comparePolicyPacks>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ComparePolicyPacksQueryResult = NonNullable<Awaited<ReturnType<typeof comparePolicyPacks>>>
+export type ComparePolicyPacksQueryError = ErrorType<void>
+
+
+/**
+ * @summary Compare two versions of the same policy pack
+ */
+
+export function useComparePolicyPacks<TData = Awaited<ReturnType<typeof comparePolicyPacks>>, TError = ErrorType<void>>(
+ params: ComparePolicyPacksParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof comparePolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getComparePolicyPacksQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
 
 export const getAddPolicyPackRuleUrl = (id: string,) => {
 

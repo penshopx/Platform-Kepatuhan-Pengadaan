@@ -339,6 +339,98 @@ export interface PolicyPackRuleInput {
   isMandatory: boolean;
 }
 
+export type PolicyPackComparisonVersionStatus = typeof PolicyPackComparisonVersionStatus[keyof typeof PolicyPackComparisonVersionStatus];
+
+
+export const PolicyPackComparisonVersionStatus = {
+  DRAFT: 'DRAFT',
+  REVIEWED: 'REVIEWED',
+  PUBLISHED: 'PUBLISHED',
+  RETIRED: 'RETIRED',
+} as const;
+
+export type PolicyPackComparisonVersionDataSource = typeof PolicyPackComparisonVersionDataSource[keyof typeof PolicyPackComparisonVersionDataSource];
+
+
+export const PolicyPackComparisonVersionDataSource = {
+  SNAPSHOT: 'SNAPSHOT',
+  CURRENT: 'CURRENT',
+} as const;
+
+export interface PolicyPackComparisonVersion {
+  id: string;
+  packName: string;
+  regimeType: string;
+  version: string;
+  status: PolicyPackComparisonVersionStatus;
+  dataSource: PolicyPackComparisonVersionDataSource;
+}
+
+export type PolicyPackComparisonRuleContentRule = { [key: string]: unknown };
+
+/**
+ * @nullable
+ */
+export type PolicyPackComparisonRuleContentCondition = { [key: string]: unknown } | null;
+
+export type PolicyPackComparisonRuleContentSource = { [key: string]: unknown };
+
+export type PolicyPackComparisonRuleContentProvision = { [key: string]: unknown };
+
+export interface PolicyPackComparisonRuleContent {
+  ruleKey: string;
+  ruleVersion: number;
+  isMandatory: boolean;
+  rule: PolicyPackComparisonRuleContentRule;
+  /** @nullable */
+  condition: PolicyPackComparisonRuleContentCondition;
+  source: PolicyPackComparisonRuleContentSource;
+  provision: PolicyPackComparisonRuleContentProvision;
+}
+
+export type PolicyPackComparisonChangeChangeType = typeof PolicyPackComparisonChangeChangeType[keyof typeof PolicyPackComparisonChangeChangeType];
+
+
+export const PolicyPackComparisonChangeChangeType = {
+  ADDED: 'ADDED',
+  REMOVED: 'REMOVED',
+  CHANGED: 'CHANGED',
+} as const;
+
+export type PolicyPackComparisonChangeChangedSectionsItem = typeof PolicyPackComparisonChangeChangedSectionsItem[keyof typeof PolicyPackComparisonChangeChangedSectionsItem];
+
+
+export const PolicyPackComparisonChangeChangedSectionsItem = {
+  RULE: 'RULE',
+  CONDITION: 'CONDITION',
+  SOURCE: 'SOURCE',
+  PROVISION: 'PROVISION',
+} as const;
+
+export interface PolicyPackComparisonChange {
+  ruleKey: string;
+  changeType: PolicyPackComparisonChangeChangeType;
+  changedSections: PolicyPackComparisonChangeChangedSectionsItem[];
+  before: PolicyPackComparisonRuleContent | null;
+  after: PolicyPackComparisonRuleContent | null;
+}
+
+export type PolicyPackComparisonSummary = {
+  /** @minimum 0 */
+  added: number;
+  /** @minimum 0 */
+  removed: number;
+  /** @minimum 0 */
+  changed: number;
+};
+
+export interface PolicyPackComparison {
+  base: PolicyPackComparisonVersion;
+  target: PolicyPackComparisonVersion;
+  summary: PolicyPackComparisonSummary;
+  changes: PolicyPackComparisonChange[];
+}
+
 export type PolicyPackTransitionStatus = typeof PolicyPackTransitionStatus[keyof typeof PolicyPackTransitionStatus];
 
 
@@ -488,5 +580,10 @@ export type ActorTimestampParameter = string;
 export type ListPackagesParams = {
 status?: string;
 search?: string;
+};
+
+export type ComparePolicyPacksParams = {
+baseId: string;
+targetId: string;
 };
 

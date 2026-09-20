@@ -579,6 +579,71 @@ export const CreatePolicyPackResponse = zod.object({
 
 
 /**
+ * Read-only comparison using immutable snapshots for published versions and current rule data for unpublished versions.
+ * @summary Compare two versions of the same policy pack
+ */
+export const ComparePolicyPacksQueryParams = zod.object({
+  "baseId": zod.coerce.string().uuid(),
+  "targetId": zod.coerce.string().uuid()
+})
+
+export const comparePolicyPacksResponseSummaryAddedMin = 0;
+
+export const comparePolicyPacksResponseSummaryRemovedMin = 0;
+
+export const comparePolicyPacksResponseSummaryChangedMin = 0;
+
+
+
+export const ComparePolicyPacksResponse = zod.object({
+  "base": zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "dataSource": zod.enum(['SNAPSHOT', 'CURRENT'])
+}),
+  "target": zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "dataSource": zod.enum(['SNAPSHOT', 'CURRENT'])
+}),
+  "summary": zod.object({
+  "added": zod.number().int().min(comparePolicyPacksResponseSummaryAddedMin),
+  "removed": zod.number().int().min(comparePolicyPacksResponseSummaryRemovedMin),
+  "changed": zod.number().int().min(comparePolicyPacksResponseSummaryChangedMin)
+}),
+  "changes": zod.array(zod.object({
+  "ruleKey": zod.string(),
+  "changeType": zod.enum(['ADDED', 'REMOVED', 'CHANGED']),
+  "changedSections": zod.array(zod.enum(['RULE', 'CONDITION', 'SOURCE', 'PROVISION'])),
+  "before": zod.union([zod.object({
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "rule": zod.record(zod.string(), zod.unknown()),
+  "condition": zod.record(zod.string(), zod.unknown()).nullable(),
+  "source": zod.record(zod.string(), zod.unknown()),
+  "provision": zod.record(zod.string(), zod.unknown())
+}),zod.null()]),
+  "after": zod.union([zod.object({
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "rule": zod.record(zod.string(), zod.unknown()),
+  "condition": zod.record(zod.string(), zod.unknown()).nullable(),
+  "source": zod.record(zod.string(), zod.unknown()),
+  "provision": zod.record(zod.string(), zod.unknown())
+}),zod.null()])
+}))
+})
+
+
+/**
  * @summary Add a rule to a mutable policy pack
  */
 export const AddPolicyPackRuleParams = zod.object({

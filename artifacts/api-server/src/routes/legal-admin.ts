@@ -22,6 +22,8 @@ import {
   CreateProvisionBody,
   CreateProvisionParams,
   CreateProvisionResponse,
+  ComparePolicyPacksQueryParams,
+  ComparePolicyPacksResponse,
   ListBusinessRulesResponse,
   ListLegalSourcesResponse,
   ListPolicyPacksResponse,
@@ -36,6 +38,10 @@ import {
   createRuleSnapshot,
   unverifiedSourcePublicationError,
 } from "../lib/policy-engine";
+import {
+  comparePolicyPackRules,
+  type ComparisonRule,
+} from "../lib/policy-pack-comparison";
 import { requireAdmin } from "../middlewares/require-admin";
 
 const router: IRouter = Router();
@@ -92,6 +98,108 @@ async function policyPackResponse(pack: typeof policyPacksTable.$inferSelect) {
       snapshotLocked: snapshot !== null,
     })),
   };
+}
+
+async function comparisonRules(pack: typeof policyPacksTable.$inferSelect) {
+  const rows = await db
+    .select({
+      packRule: policyPackRulesTable,
+      rule: businessRulesTable,
+      condition: ruleConditionsTable,
+      provision: provisionsTable,
+      source: legalSourcesTable,
+    })
+    .from(policyPackRulesTable)
+    .innerJoin(
+      businessRulesTable,
+      eq(policyPackRulesTable.businessRuleId, businessRulesTable.id),
+    )
+    .leftJoin(
+      ruleConditionsTable,
+      eq(policyPackRulesTable.ruleConditionId, ruleConditionsTable.id),
+    )
+    .innerJoin(
+      provisionsTable,
+      eq(businessRulesTable.provisionId, provisionsTable.id),
+    )
+    .innerJoin(
+      legalSourcesTable,
+      eq(provisionsTable.legalSourceId, legalSourcesTable.id),
+    )
+    .where(eq(policyPackRulesTable.policyPackId, pack.id));
+
+  const useSnapshot =
+    pack.status === "PUBLISHED" || pack.status === "RETIRED";
+  return rows.map(({ packRule, rule, condition, provision, source }) => {
+    if (useSnapshot) {
+      if (!packRule.snapshot) {
+        throw new Error(
+          `Snapshot aturan ${rule.ruleKey} pada versi ${pack.version} tidak tersedia`,
+        );
+      }
+      const snapshot = packRule.snapshot as {
+        rule: Record<string, unknown>;
+        condition: Record<string, unknown> | null;
+        source: Record<string, unknown>;
+        provision: Record<string, unknown>;
+      };
+      return {
+        ruleKey: String(snapshot.rule.key),
+        ruleVersion: Number(snapshot.rule.version),
+        isMandatory: Boolean(snapshot.rule.mandatory),
+        rule: snapshot.rule,
+        condition: snapshot.condition,
+        source: snapshot.source,
+        provision: snapshot.provision,
+      } satisfies ComparisonRule;
+    }
+
+    return {
+      ruleKey: rule.ruleKey,
+      ruleVersion: rule.version,
+      isMandatory: packRule.isMandatory,
+      rule: {
+        id: rule.id,
+        key: rule.ruleKey,
+        category: rule.ruleCategory,
+        description: rule.description,
+        valueType: rule.valueType,
+        defaultValue: rule.defaultValue,
+        formulaAst: rule.formulaAst,
+        allowedReferences: rule.allowedReferences,
+        version: rule.version,
+        mandatory: packRule.isMandatory,
+      },
+      condition: condition
+        ? {
+            entityType: condition.entityType,
+            fundingSource: condition.fundingSource,
+            procurementMethod: condition.procurementMethod,
+            packageValueMin: condition.packageValueMin,
+            packageValueMax: condition.packageValueMax,
+            scopeType: condition.scopeType,
+            scopeId: condition.scopeId,
+            effectiveDate: condition.effectiveDate,
+            expiryDate: condition.expiryDate,
+          }
+        : null,
+      source: {
+        id: source.id,
+        regulationCode: source.regulationCode,
+        title: source.title,
+        issuingAuthority: source.issuingAuthority,
+        authorityLevel: source.authorityLevel,
+        isBinding: source.isBinding,
+        verificationStatus: source.verificationStatus,
+      },
+      provision: {
+        id: provision.id,
+        articleNumber: provision.articleNumber,
+        provisionType: provision.provisionType,
+        rawText: provision.rawText,
+      },
+    } satisfies ComparisonRule;
+  });
 }
 
 router.get("/legal-sources", requireAdmin, async (_req, res): Promise<void> => {
@@ -315,6 +423,72 @@ router.get("/policy-packs", requireAdmin, async (_req, res): Promise<void> => {
       await Promise.all(packs.map(policyPackResponse)),
     ),
   );
+});
+
+router.get("/policy-packs/compare", requireAdmin, async (req, res): Promise<void> => {
+  const query = ComparePolicyPacksQueryParams.safeParse(req.query);
+  if (!query.success || query.data.baseId === query.data.targetId) {
+    res.status(400).json({ error: "Pilih dua versi policy pack yang berbeda" });
+    return;
+  }
+  const packs = await db
+    .select()
+    .from(policyPacksTable)
+    .where(
+      inArray(policyPacksTable.id, [query.data.baseId, query.data.targetId]),
+    );
+  const base = packs.find((pack) => pack.id === query.data.baseId);
+  const target = packs.find((pack) => pack.id === query.data.targetId);
+  if (!base || !target) {
+    res.status(404).json({ error: "Salah satu policy pack tidak ditemukan" });
+    return;
+  }
+  if (
+    base.packName !== target.packName ||
+    base.regimeType !== target.regimeType
+  ) {
+    res.status(400).json({
+      error: "Perbandingan hanya tersedia untuk nama dan regime yang sama",
+    });
+    return;
+  }
+
+  try {
+    const [baseRules, targetRules] = await Promise.all([
+      comparisonRules(base),
+      comparisonRules(target),
+    ]);
+    const changes = comparePolicyPackRules(baseRules, targetRules);
+
+    const metadata = (pack: typeof policyPacksTable.$inferSelect) => ({
+      id: pack.id,
+      packName: pack.packName,
+      regimeType: pack.regimeType,
+      version: pack.version,
+      status: pack.status,
+      dataSource:
+        pack.status === "PUBLISHED" || pack.status === "RETIRED"
+          ? ("SNAPSHOT" as const)
+          : ("CURRENT" as const),
+    });
+    res.json(
+      ComparePolicyPacksResponse.parse({
+        base: metadata(base),
+        target: metadata(target),
+        summary: {
+          added: changes.filter(({ changeType }) => changeType === "ADDED").length,
+          removed: changes.filter(({ changeType }) => changeType === "REMOVED").length,
+          changed: changes.filter(({ changeType }) => changeType === "CHANGED").length,
+        },
+        changes,
+      }),
+    );
+  } catch (error) {
+    req.log.warn({ error }, "Policy pack comparison rejected");
+    res.status(400).json({
+      error: error instanceof Error ? error.message : "Perbandingan gagal",
+    });
+  }
 });
 
 router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {

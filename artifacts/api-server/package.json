@@ -8,6 +8,7 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "test:decision-routes": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/decision-routes.test.ts",
+    "test:policy-pack-routes": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/policy-pack-routes.test.ts",
     "test:policy-pack-comparison": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/policy-pack-comparison.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:policy-engine": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/policy-engine.test.ts"

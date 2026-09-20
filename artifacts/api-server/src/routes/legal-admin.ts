@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   businessRulesTable,
@@ -51,12 +51,26 @@ const nullableIso = (value: Date | string | null) =>
   value ? iso(value) : null;
 
 function isDuplicatePolicyPackVersion(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const databaseError = error as { code?: string; constraint?: string };
-  return (
-    databaseError.code === "23505" &&
-    databaseError.constraint === "policy_pack_regime_version_unique"
-  );
+  let current = error;
+  const visited = new Set<object>();
+
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const databaseError = current as {
+      code?: string;
+      constraint?: string;
+      cause?: unknown;
+    };
+    if (
+      databaseError.code === "23505" &&
+      databaseError.constraint === "policy_pack_regime_version_unique"
+    ) {
+      return true;
+    }
+    current = databaseError.cause;
+  }
+
+  return false;
 }
 
 async function legalSourceResponse(
@@ -81,8 +95,11 @@ async function legalSourceResponse(
   };
 }
 
-async function policyPackResponse(pack: typeof policyPacksTable.$inferSelect) {
-  const rules = await db
+async function policyPackResponse(
+  pack: typeof policyPacksTable.$inferSelect,
+  database: typeof db = db,
+) {
+  const rules = await database
     .select({
       id: policyPackRulesTable.id,
       businessRuleId: policyPackRulesTable.businessRuleId,
@@ -429,7 +446,7 @@ router.get("/policy-packs", requireAdmin, async (_req, res): Promise<void> => {
     .orderBy(asc(policyPacksTable.packName), asc(policyPacksTable.version));
   res.json(
     ListPolicyPacksResponse.parse(
-      await Promise.all(packs.map(policyPackResponse)),
+      await Promise.all(packs.map((pack) => policyPackResponse(pack))),
     ),
   );
 });
@@ -500,7 +517,10 @@ router.get("/policy-packs/compare", requireAdmin, async (req, res): Promise<void
   }
 });
 
-router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {
+export function createPolicyPackHandler(
+  database: typeof db = db,
+): RequestHandler {
+  return async (req, res): Promise<void> => {
   const body = CreatePolicyPackBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
@@ -508,7 +528,7 @@ router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {
   }
   const actor = res.locals.adminActor as { id: string; role: "ADMIN" };
   try {
-    const [pack] = await db.transaction(async (tx) => {
+    const [pack] = await database.transaction(async (tx) => {
       await tx.execute(
         sql`select set_audit_context(${actor.id}, 'USER', ${actor.role}, 'Create policy pack')`,
       );
@@ -516,7 +536,11 @@ router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {
     });
     res
       .status(201)
-      .json(CreatePolicyPackResponse.parse(await policyPackResponse(pack)));
+      .json(
+        CreatePolicyPackResponse.parse(
+          await policyPackResponse(pack, database),
+        ),
+      );
   } catch (error) {
     if (isDuplicatePolicyPackVersion(error)) {
       res.status(409).json({
@@ -526,7 +550,10 @@ router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {
     }
     throw error;
   }
-});
+  };
+}
+
+router.post("/policy-packs", requireAdmin, createPolicyPackHandler());
 
 router.post("/policy-packs/:id/rules", requireAdmin, async (req, res): Promise<void> => {
   const params = AddPolicyPackRuleParams.safeParse(req.params);

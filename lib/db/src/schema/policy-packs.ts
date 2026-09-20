@@ -41,7 +41,11 @@ export const policyPacksTable = pgTable(
       .defaultNow(),
   },
   (table) => [
-    unique("policy_pack_version_unique").on(table.packName, table.version),
+    unique("policy_pack_regime_version_unique").on(
+      table.packName,
+      table.regimeType,
+      table.version,
+    ),
     index("policy_packs_regime_status_idx").on(
       table.regimeType,
       table.status,

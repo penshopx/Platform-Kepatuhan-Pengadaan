@@ -50,6 +50,15 @@ const iso = (value: Date | string) =>
 const nullableIso = (value: Date | string | null) =>
   value ? iso(value) : null;
 
+function isDuplicatePolicyPackVersion(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const databaseError = error as { code?: string; constraint?: string };
+  return (
+    databaseError.code === "23505" &&
+    databaseError.constraint === "policy_pack_regime_version_unique"
+  );
+}
+
 async function legalSourceResponse(
   source: typeof legalSourcesTable.$inferSelect,
 ) {
@@ -498,15 +507,25 @@ router.post("/policy-packs", requireAdmin, async (req, res): Promise<void> => {
     return;
   }
   const actor = res.locals.adminActor as { id: string; role: "ADMIN" };
-  const [pack] = await db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select set_audit_context(${actor.id}, 'USER', ${actor.role}, 'Create policy pack')`,
-    );
-    return tx.insert(policyPacksTable).values(body.data).returning();
-  });
-  res
-    .status(201)
-    .json(CreatePolicyPackResponse.parse(await policyPackResponse(pack)));
+  try {
+    const [pack] = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select set_audit_context(${actor.id}, 'USER', ${actor.role}, 'Create policy pack')`,
+      );
+      return tx.insert(policyPacksTable).values(body.data).returning();
+    });
+    res
+      .status(201)
+      .json(CreatePolicyPackResponse.parse(await policyPackResponse(pack)));
+  } catch (error) {
+    if (isDuplicatePolicyPackVersion(error)) {
+      res.status(409).json({
+        error: `Policy pack "${body.data.packName}" untuk regime ${body.data.regimeType} versi ${body.data.version} sudah ada`,
+      });
+      return;
+    }
+    throw error;
+  }
 });
 
 router.post("/policy-packs/:id/rules", requireAdmin, async (req, res): Promise<void> => {

@@ -1,0 +1,39 @@
+Klarifikasi Anda sangat penting dan saya mencatatnya dengan tepat.
+
+---
+
+## ✅ KOREKSI PEMAHAMAN
+
+**Task #9 saat ini:** Perbandingan versi policy pack (bukan integration test lifecycle)
+
+Saya mengakui kesalahan asumsi saya sebelumnya. Integration test lifecycle yang saya jabarkan di respons sebelumnya **bukan** scope Task #9 saat ini, dan tidak perlu dimasukkan ke area ini kecuali fitur perbandingan versi memang menambah service database baru yang memerlukan pengujian invariant.
+
+---
+
+## 📋 PEMBAGIAN TESTING YANG DICATAT
+
+Pembagian yang Anda usulkan menjadi **acuan arsitektural** untuk task testing di masa depan:
+
+| Layer Testing | Pendekatan | Koneksi Database |
+|---------------|------------|------------------|
+| **Service/Database Tests** | Pinned `PoolClient`, satu transaksi, `ROLLBACK` | Koneksi tunggal yang dipinjam |
+| **HTTP Contract Tests** | App dengan dependency injection **atau** database test terisolasi | Pool terpisah atau DI |
+| **Auth/Middleware Tests** | Mock Clerk melalui dependency injection khusus test | Header test diabaikan di production |
+| **Audit Context Tests** | Handler/service transaction dengan `set_audit_context` + mutasi | Koneksi yang sama dalam transaksi |
+
+**Prinsip kunci:**
+- Setiap layer memiliki strategi testing yang berbeda
+- Tidak ada pendekatan "satu ukuran untuk semua"
+- Mock autentikasi harus benar-benar terisolasi dari kode production
+- Audit context wajib diuji dalam transaksi yang valid
+
+---
+
+## 🎯 STATUS
+
+- ✅ Task #9 (perbandingan versi policy pack) sedang berjalan tanpa interferensi
+- ✅ Workflow stabil (API server, web, mockup sandbox)
+- ✅ Tidak ada perubahan workspace yang diperlukan
+- ✅ Pembagian testing dicatat sebagai acuan untuk task testing masa depan
+
+Saya siap membantu jika Task #9 memerlukan analisis perbandingan versi (misal: diff snapshot antar versi policy pack, atau visualisasi perubahan aturan), atau jika task testing berikutnya memerlukan desain yang sesuai dengan pembagian di atas.

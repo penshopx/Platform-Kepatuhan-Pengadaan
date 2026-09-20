@@ -1,0 +1,236 @@
+Berikut panduan desain untuk menambahkan test regresi error state pada pemuatan policy pack, yang selaras dengan pola test Task #10 yang sudah digabungkan.
+
+---
+
+## 🎯 SCOPE TEST TAMBAHAN
+
+Test ini melengkapi skenario yang sudah ada:
+- ✅ Success evaluation (Task #10)
+- ✅ Failed evaluation (Task #10)
+- ✅ Empty policy packs (Task #10)
+- 🆕 **Fetch policy packs error** (Task #14)
+
+---
+
+## 📝 TEST CASE: Fetch Policy Packs Error
+
+### Tambahkan ke `package-compliance-evaluation.test.tsx`
+
+```typescript
+describe('Policy Pack Loading Error', () => {
+  it('should display clear error message when policy packs fail to load', async () => {
+    const user = userEvent.setup();
+    
+    setupMockApiResponses({
+      policyPacks: Promise.reject(new Error('Network timeout'))
+    });
+
+    render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+    // Verifikasi pesan error tampil
+    await waitFor(() => {
+      expect(screen.getByText(/policy pack gagal dimuat/i)).toBeInTheDocument();
+    });
+
+    // Verifikasi arahan untuk muat ulang
+    expect(screen.getByText(/muat ulang/i)).toBeInTheDocument();
+
+    // Verifikasi tombol evaluasi tidak tersedia
+    const evaluateButton = screen.queryByRole('button', { name: /mulai evaluasi/i });
+    expect(evaluateButton).toBeNull(); // Tidak ada tombol evaluasi sama sekali
+    // ATAU jika tombol ada tapi disabled:
+    // expect(evaluateButton).toBeDisabled();
+  });
+
+  it('should provide retry button to reload policy packs', async () => {
+    const user = userEvent.setup();
+    
+    // First call fails, second call succeeds
+    mockApiClient.getPublishedPolicyPacks
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValueOnce(publishedPolicyPacks);
+
+    render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+    // Wait for error state
+    await waitFor(() => {
+      expect(screen.getByText(/policy pack gagal dimuat/i)).toBeInTheDocument();
+    });
+
+    // Click retry/reload button
+    const retryButton = screen.getByRole('button', { name: /muat ulang/i });
+    await user.click(retryButton);
+
+    // Verify policy packs loaded successfully after retry
+    await waitFor(() => {
+      expect(screen.getByRole('combobox', { name: /pilih policy pack/i })).toBeInTheDocument();
+    });
+
+    // Verify evaluate button is now available
+    expect(screen.getByRole('button', { name: /mulai evaluasi/i })).toBeEnabled();
+  });
+
+  it('should display specific error message from API', async () => {
+    const specificError = new Error('Unauthorized: insufficient permissions');
+    
+    setupMockApiResponses({
+      policyPacks: Promise.reject(specificError)
+    });
+
+    render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/policy pack gagal dimuat/i)).toBeInTheDocument();
+    });
+
+    // Optional: verify specific error message is shown (depends on implementation)
+    // expect(screen.getByText(/unauthorized/i)).toBeInTheDocument();
+  });
+
+  it('should maintain error state until successful reload', async () => {
+    const user = userEvent.setup();
+    
+    // Both calls fail
+    mockApiClient.getPublishedPolicyPacks
+      .mockRejectedValue(new Error('Persistent error'));
+
+    render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/policy pack gagal dimuat/i)).toBeInTheDocument();
+    });
+
+    // Click retry
+    const retryButton = screen.getByRole('button', { name: /muat ulang/i });
+    await user.click(retryButton);
+
+    // Error state should persist
+    await waitFor(() => {
+      expect(screen.getByText(/policy pack gagal dimuat/i)).toBeInTheDocument();
+    });
+
+    // Evaluate button should still not be available
+    const evaluateButton = screen.queryByRole('button', { name: /mulai evaluasi/i });
+    expect(evaluateButton).toBeNull();
+  });
+});
+```
+
+---
+
+## 🎨 KOMPONEN UI YANG DIHARAPKAN
+
+Berdasarkan test di atas, komponen `package-compliance-evaluation.tsx` harus memiliki:
+
+### 1. Error State UI
+
+```tsx
+{error && (
+  <Alert variant="destructive">
+    <AlertCircleIcon className="h-4 w-4" />
+    <AlertTitle>Policy pack gagal dimuat</AlertTitle>
+    <AlertDescription className="space-y-2">
+      <p>Tidak dapat memuat daftar policy pack. Silakan muat ulang.</p>
+      {error.message && (
+        <p className="text-xs text-muted-foreground">
+          Detail: {error.message}
+        </p>
+      )}
+      <Button 
+        variant="outline" 
+        size="sm"
+        onClick={handleRetry}
+      >
+        <RefreshCwIcon className="h-4 w-4 mr-2" />
+        Muat ulang
+      </Button>
+    </AlertDescription>
+  </Alert>
+)}
+```
+
+### 2. Retry Handler
+
+```tsx
+const handleRetry = async () => {
+  setError(null);
+  setLoading(true);
+  try {
+    const packs = await apiClient.getPublishedPolicyPacks();
+    setPolicyPacks(packs);
+  } catch (e) {
+    setError(e instanceof Error ? e.message : 'Unknown error');
+  } finally {
+    setLoading(false);
+  }
+};
+```
+
+### 3. Conditional Rendering
+
+```tsx
+// Jangan render selector atau tombol evaluasi jika error
+{error ? (
+  <ErrorAlert error={error} onRetry={handleRetry} />
+) : loading ? (
+  <LoadingState />
+) : policyPacks.length === 0 ? (
+  <EmptyState />
+) : (
+  <>
+    <PolicyPackSelector ... />
+    <Button onClick={evaluate} disabled={!selectedPackId}>
+      Mulai Evaluasi
+    </Button>
+  </>
+)}
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Test untuk fetch policy packs error ditambahkan
+- [ ] Test untuk retry functionality ditambahkan
+- [ ] Test untuk persistent error state ditambahkan
+- [ ] Komponen menampilkan pesan "Policy pack gagal dimuat"
+- [ ] Komponen menampilkan tombol "Muat ulang"
+- [ ] Tombol evaluasi tidak tersedia saat error
+- [ ] Retry berhasil memuat policy packs
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+
+---
+
+## ⚠️ INVARIANT YANG DIJAGA
+
+1. **Fixture fiktif**: Tetap gunakan `TEST-REG-2025`, bukan klaim legal konkret
+2. **Tipe OpenAPI**: Import dari `generated/api`, jangan asumsikan field name
+3. **Pesan error jelas**: User harus tahu apa yang salah dan bagaimana memperbaikinya
+4. **Tombol evaluasi disabled**: Tidak boleh ada evaluasi tanpa policy pack yang valid
+5. **Retry functionality**: User harus bisa memuat ulang tanpa refresh halaman
+
+---
+
+## 🚀 CARA MENJALANKAN TEST
+
+```bash
+cd artifacts/procurement-compliance
+
+# Jalankan test ini saja
+npm test -- package-compliance-evaluation.test.tsx
+
+# Jalankan dengan coverage
+npm run test:coverage -- package-compliance-evaluation.test.tsx
+```
+
+---
+
+## 📊 STATUS
+
+- ✅ Task #13 (constraint unik policy pack) sudah digabungkan
+- ✅ Task #14 (test error state) sedang berjalan
+- ✅ Workflow stabil
+- ✅ Tidak ada interferensi paralel
+
+Silakan lanjutkan Task #14. Jika ada inkonsistensi antara pesan error yang diharapkan dan implementasi aktual, saya siap membantu menyesuaikan.

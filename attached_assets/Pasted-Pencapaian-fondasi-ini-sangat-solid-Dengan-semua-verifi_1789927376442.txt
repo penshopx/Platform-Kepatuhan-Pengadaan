@@ -1,0 +1,413 @@
+Pencapaian fondasi ini sangat solid. Dengan semua verifikasi lulus (AST evaluator, trigger, constraint, migrasi, typecheck, API server), kita memiliki basis yang **terbukti andal** untuk membangun dua task berikutnya. Mari saya uraikan panduan desain untuk masing-masing task agar selaras dengan prinsip-prinsip yang sudah kita sepakati.
+
+---
+
+## 🎯 TASK #3: Endpoint Evaluasi Kepatuhan
+
+### 1. Desain OpenAPI — Endpoint `/api/rules/evaluate`
+
+Endpoint ini harus **explainable** dan **reproducible**. Response-nya harus cukup lengkap sehingga auditor atau PPK dapat menelusuri keputusan secara mandiri.
+
+```yaml
+# lib/api-spec/openapi.yaml
+
+paths:
+  /api/rules/evaluate:
+    post:
+      operationId: evaluateRule
+      summary: Evaluasi kepatuhan aturan terhadap konteks paket pengadaan
+      description: |
+        Mengevaluasi satu atau lebih aturan dari policy pack PUBLISHED 
+        berdasarkan konteks paket. Setiap keputusan disimpan sebagai 
+        decision_reference immutable yang dapat direproduksi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluationRequest'
+      responses:
+        '200':
+          description: Hasil evaluasi lengkap dengan decision reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResponse'
+        '400':
+          description: Konteks tidak lengkap atau policy pack tidak ditemukan
+        '404':
+          description: Policy pack tidak ada atau bukan PUBLISHED
+        '422':
+          description: Aturan ditemukan tetapi evaluasi gagal (formula error)
+
+components:
+  schemas:
+    EvaluationRequest:
+      type: object
+      required: [policyPackCode, policyPackVersion, context]
+      properties:
+        policyPackCode:
+          type: string
+          description: Kode unik policy pack (misal: "GOV-CENTRAL-CONSTRUCTION")
+        policyPackVersion:
+          type: string
+          description: Versi semver (misal: "1.0.0")
+        ruleKeys:
+          type: array
+          items: { type: string }
+          description: |
+            Daftar rule_key spesifik yang ingin dievaluasi. 
+            Jika kosong, evaluasi semua aturan mandatory dalam pack.
+        context:
+          type: object
+          description: |
+            Konteks paket pengadaan. Harus memuat semua referensi 
+            yang dibutuhkan oleh formula AST.
+          additionalProperties: true
+          example:
+            package_value: 450000000
+            procurement_method: "TENDER"
+            entity_type: "KONSTRUKSI"
+            funding_source: "APBN"
+            scope_type: "NATIONAL"
+            tkdn_percentage: 45
+
+    EvaluationResponse:
+      type: object
+      required: [decisionReferenceId, evaluatedAt, policyPack, results]
+      properties:
+        decisionReferenceId:
+          type: string
+          format: uuid
+          description: ID immutable dari decision_references
+        evaluatedAt:
+          type: string
+          format: date-time
+        policyPack:
+          type: object
+          properties:
+            code: { type: string }
+            version: { type: string }
+            regimeType: { type: string }
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleEvaluationResult'
+
+    RuleEvaluationResult:
+      type: object
+      required: [ruleKey, status, explanation]
+      properties:
+        ruleKey: { type: string }
+        status:
+          type: string
+          enum: [APPLICABLE, NOT_APPLICABLE, PASSED, FAILED, ERROR]
+        value:
+          description: Nilai hasil evaluasi (untuk THRESHOLD) atau boolean (untuk VALIDATION)
+        explanation:
+          type: string
+          description: Penjelasan manusia-readable mengapa hasil ini dihasilkan
+        rule:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            version: { type: integer }
+            category: { type: string }
+        provision:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            articleNumber: { type: string }
+            clauseType: { type: string }
+            rawText: { type: string }
+        source:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            regulationCode: { type: string }
+            title: { type: string }
+            verificationStatus: 
+              type: string
+              enum: [VERIFIED, UNVERIFIED, NON_BINDING]
+            isBinding: { type: boolean }
+        conditionMatched:
+          type: object
+          description: Kondisi mana yang cocok (jika ada)
+        formulaUsed:
+          type: object
+          description: AST formula yang dievaluasi (jika formula)
+        referencedInputs:
+          type: array
+          items: { type: string }
+          description: Daftar path referensi yang benar-benar digunakan
+        overrideApplied:
+          type: object
+          nullable: true
+          description: Detail override jika diterapkan (scope, priority, justifikasi)
+```
+
+### 2. Alur Logika Handler (`artifacts/api-server/src/routes/evaluate.ts`)
+
+```typescript
+export async function evaluateRuleHandler(req, res, ctx) {
+  const { policyPackCode, policyPackVersion, ruleKeys, context } = req.body;
+  
+  // 1. Validasi: hanya PUBLISHED pack yang boleh dievaluasi
+  const pack = await db.query.policyPacks.findFirst({
+    where: and(
+      eq(policyPacks.packName, policyPackCode),
+      eq(policyPacks.version, policyPackVersion)
+    )
+  });
+  
+  if (!pack || pack.status !== 'PUBLISHED') {
+    return res.status(404).json({ 
+      error: 'Policy pack not found or not PUBLISHED' 
+    });
+  }
+
+  // 2. Ambil snapshot aturan dari pack (bukan dari business_rules live!)
+  const packRules = await db.query.policyPackRules.findMany({
+    where: eq(policyPackRules.policyPackId, pack.id)
+  });
+
+  // 3. Filter berdasarkan ruleKeys jika disediakan
+  const rulesToEvaluate = ruleKeys?.length 
+    ? packRules.filter(pr => ruleKeys.includes(pr.businessRule.ruleKey))
+    : packRules.filter(pr => pr.isMandatory);
+
+  // 4. Evaluasi setiap aturan
+  const results = [];
+  for (const packRule of rulesToEvaluate) {
+    const result = await evaluateSingleRule(packRule, context, pack);
+    results.push(result);
+  }
+
+  // 5. Simpan sebagai decision_reference immutable
+  const decisionRef = await createDecisionReference({
+    entityType: 'EVALUATION_REQUEST',
+    entityId: crypto.randomUUID(),
+    policyPackId: pack.id,
+    policyPackVersion: pack.version,
+    evaluationInput: { context, ruleKeys },
+    evaluationResult: { results },
+    snapshot: buildEvaluationSnapshot(pack, packRules, results)
+  });
+
+  return res.json({
+    decisionReferenceId: decisionRef.id,
+    evaluatedAt: decisionRef.evaluatedAt,
+    policyPack: { ... },
+    results
+  });
+}
+```
+
+### 3. Keputusan Desain Penting
+
+| Keputusan | Alasan |
+|-----------|--------|
+| **Hanya baca snapshot, bukan `business_rules` live** | Menjamin reproduktibilitas. Jika aturan berubah, evaluasi historis tetap konsisten. |
+| **`decision_reference` dibuat dalam transaksi yang sama** | Tidak boleh ada evaluasi tanpa jejak audit. |
+| **`explanation` dihasilkan oleh rule engine, bukan hard-coded** | Penjelasan harus merujuk ke pasal, nilai input, dan kondisi yang cocok secara dinamis. |
+| **`overrideApplied` ditampilkan eksplisit** | Auditor harus tahu apakah aturan nasional atau daerah yang dipakai, dan mengapa. |
+| **`status` dibedakan: APPLICABLE vs PASSED vs FAILED** | "Tidak berlaku" berbeda dengan "gagal". Keduanya penting untuk kepatuhan. |
+
+---
+
+## 🎯 TASK #4: Antarmuka Admin Hukum
+
+### 1. Struktur Halaman yang Dibutuhkan
+
+```
+artifacts/procurement-compliance/src/
+├── routes/
+│   ├── legal-sources/
+│   │   ├── index.tsx           # Daftar sumber hukum + filter verifikasi
+│   │   ├── $sourceId.tsx       # Detail sumber + daftar pasal
+│   │   └── new.tsx             # Form tambah sumber
+│   ├── provisions/
+│   │   └── $provisionId.tsx    # Detail pasal + aturan terkait
+│   ├── business-rules/
+│   │   ├── index.tsx           # Daftar aturan + versioning view
+│   │   ├── $ruleId.tsx         # Detail aturan + riwayat versi
+│   │   └── new-version.tsx     # Form buat versi baru (immutable)
+│   └── policy-packs/
+│       ├── index.tsx           # Daftar pack + status badge
+│       ├── $packId.tsx         # Detail pack + daftar aturan
+│       ├── $packId/edit.tsx    # Edit (hanya DRAFT/REVIEWED)
+│       └── $packId/publish.tsx # Konfirmasi publish + alasan
+```
+
+### 2. Komponen Kunci yang Harus Ada
+
+#### A. **Verification Badge** (di setiap halaman sumber/pasal/aturan)
+```tsx
+<VerificationBadge status={source.verificationStatus}>
+  {status === 'VERIFIED' && <CheckIcon />}
+  {status === 'UNVERIFIED' && <AlertIcon />}
+  {status === 'NON_BINDING' && <InfoIcon />}
+</VerificationBadge>
+```
+Badge ini harus **selalu terlihat** agar admin tidak lupa bahwa data belum diverifikasi.
+
+#### B. **Version Timeline** (untuk `business_rules`)
+```tsx
+<VersionTimeline versions={ruleVersions}>
+  {versions.map(v => (
+    <VersionCard 
+      version={v.version}
+      isActive={v.isActive}
+      supersededBy={v.supersededBy}
+      onChangeClick={() => navigate(`new-version?from=${v.id}`)}
+    />
+  ))}
+</VersionTimeline>
+```
+Menampilkan rantai versi secara visual. Versi aktif ditandai jelas.
+
+#### C. **Publish Confirmation Dialog**
+```tsx
+<Dialog>
+  <DialogTitle>Publish Policy Pack?</DialogTitle>
+  <DialogDescription>
+    {unverifiedBlocking.length > 0 ? (
+      <Alert variant="destructive">
+        <p>Publikasi diblokir oleh {unverifiedBlocking.length} sumber mengikat yang belum diverifikasi:</p>
+        <ul>
+          {unverifiedBlocking.map(s => (
+            <li key={s.id}>{s.regulationCode} — {s.title}</li>
+          ))}
+        </ul>
+      </Alert>
+    ) : (
+      <p>Pack akan di-snapshot dan menjadi immutable. Lanjutkan?</p>
+    )}
+  </DialogDescription>
+  {unverifiedBlocking.length === 0 && (
+    <Textarea 
+      placeholder="Alasan publikasi (wajib)"
+      value={reason}
+      onChange={setReason}
+    />
+  )}
+</Dialog>
+```
+**Penting**: Jika ada sumber mengikat UNVERIFIED, tombol publish **disabled** dan alasan ditampilkan sebagai daftar blokade.
+
+#### D. **Read-Only Indicator** untuk Published Pack
+```tsx
+{pack.status === 'PUBLISHED' && (
+  <Banner variant="info">
+    <LockIcon /> Pack ini sudah diterbitkan dan bersifat read-only. 
+    Untuk perubahan, buat versi baru.
+    <Button onClick={createNewVersion}>Buat Versi Baru</Button>
+  </Banner>
+)}
+```
+
+### 3. Alur Kerja Verifikasi Hukum
+
+```
+1. Admin memasukkan sumber hukum → status: UNVERIFIED
+2. Admin menambahkan pasal (raw text dari naskah resmi)
+3. Admin hukum meninjau → klik "Verify" → status: VERIFIED
+   - Trigger mencatat actor, timestamp, dan alasan verifikasi
+4. Admin membuat business rule yang merujuk ke pasal terverifikasi
+5. Admin menyusun policy pack dari aturan-aturan tersebut
+6. Admin klik "Publish":
+   - Sistem cek: semua sumber mengikat harus VERIFIED
+   - Jika ada yang UNVERIFIED → tampilkan daftar blokade
+   - Jika OK → minta alasan → snapshot → status: PUBLISHED
+```
+
+### 4. Endpoint API yang Diperlukan
+
+```yaml
+# Tambahan untuk OpenAPI
+paths:
+  /api/admin/legal-sources:
+    get: { ... }
+    post: { ... }
+  /api/admin/legal-sources/{id}:
+    get: { ... }
+    patch: { ... }  # Update title, verification status
+  /api/admin/legal-sources/{id}/verify:
+    post:
+      description: Tandai sumber sebagai VERIFIED. Wajib reason.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+
+  /api/admin/business-rules:
+    post: { ... }
+  /api/admin/business-rules/{id}/new-version:
+    post:
+      description: Buat versi baru dari aturan. Versi lama tetap ada.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, changes]
+              properties:
+                reason: { type: string }
+                changes: 
+                  type: object
+                  description: Field yang berubah (defaultValue, formulaAst, dll)
+
+  /api/admin/policy-packs:
+    get: { ... }
+    post: { ... }
+  /api/admin/policy-packs/{id}/publish:
+    post:
+      description: Publish pack. Gagal jika ada sumber mengikat UNVERIFIED.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200': { description: Published }
+        '422':
+          description: Blocked by unverified sources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blockingSources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        regulationCode: { type: string }
+                        title: { type: string }
+```
+
+---
+
+## ❓ Pertanyaan untuk Alignment
+
+Sebelum Anda melanjutkan implementasi, ada beberapa keputusan yang perlu dikonfirmasi:
+
+1. **Urgensi task**: Apakah Task #3 (endpoint evaluasi) harus selesai lebih dulu, atau boleh dikerjakan paralel dengan Task #4 (admin UI)?
+
+2. **Autentikasi admin**: Untuk kolom `verifiedBy`, `publishedBy`, dan audit actor — apakah kita sudah punya sistem autentikasi, atau masih menggunakan placeholder user untuk saat ini?
+
+3. **Import massal regulasi**: Apakah perlu menyediakan fitur import dari file (misal: CSV/JSON) untuk memasukkan pasal-pasal Perpres 46/2025 secara batch setelah naskah resmi diverifikasi? Atau cukup input manual per-pasal?
+
+4. **Explainability level**: Untuk `explanation` di response evaluasi, apakah cukup dalam bentuk teks terstruktur (misal: *"Aturan X dari Pasal Y Perpres Z mewajibkan TKDN minimal 40%. Paket Anda: 45%. Status: PASSED"*), atau perlu format yang lebih kaya (HTML/Markdown)?
+
+5. **Decision reference query**: Apakah perlu endpoint terpisah untuk **mengambil kembali** decision reference berdasarkan ID (untuk keperluan audit/review)? Saya merekomendasikan `GET /api/decisions/{id}` sebagai pasangan dari endpoint evaluasi.
+
+Silakan beri tahu prioritas dan jawaban atas pertanyaan di atas, agar saya dapat membantu menyempurnakan spesifikasi sebelum Anda mulai implementasi.

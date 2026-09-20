@@ -225,12 +225,14 @@ export const CompleteEpurchasingReviewResponse = zod.object({
  * @summary List recent workspace activity
  */
 export const ListActivityResponseItem = zod.object({
-  "id": zod.number().int(),
+  "id": zod.string(),
   "actor": zod.string(),
   "action": zod.string(),
   "target": zod.string(),
   "timestamp": zod.string(),
-  "tone": zod.string()
+  "tone": zod.string(),
+  "decisionReference": zod.string().uuid().optional(),
+  "packageId": zod.number().int().optional()
 })
 export const ListActivityResponse = zod.array(ListActivityResponseItem)
 

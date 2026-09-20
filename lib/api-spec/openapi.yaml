@@ -798,7 +798,7 @@ components:
       required: [id, actor, action, target, timestamp, tone]
       properties:
         id:
-          type: integer
+          type: string
         actor:
           type: string
         action:
@@ -809,6 +809,11 @@ components:
           type: string
         tone:
           type: string
+        decisionReference:
+          type: string
+          format: uuid
+        packageId:
+          type: integer
     Provision:
       type: object
       required: [id, articleNumber, provisionType, rawText, sourceCategory]

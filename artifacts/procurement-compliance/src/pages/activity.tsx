@@ -1,6 +1,7 @@
 import { useListActivity } from "@workspace/api-client-react";
 import { ActivitySquare, FileEdit, CheckSquare, PlusCircle, AlertTriangle, ArrowRight } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import { Link } from "wouter";
 
 export default function Activity() {
   const { data: activities, isLoading, isError } = useListActivity();
@@ -65,6 +66,24 @@ export default function Activity() {
                   <span className="text-muted-foreground mx-1">{activity.action.toLowerCase()}</span>
                   <span className="font-bold text-foreground">{activity.target}</span>
                 </p>
+                {activity.decisionReference && activity.packageId && (
+                  <div className="mt-4 border-t border-border pt-3">
+                    <p className="mb-2 text-xs text-muted-foreground">
+                      Decision reference
+                    </p>
+                    <code className="block break-all text-xs text-foreground">
+                      {activity.decisionReference}
+                    </code>
+                    <Link
+                      href={`/packages/${activity.packageId}?decisionReference=${encodeURIComponent(activity.decisionReference)}`}
+                      className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+                      data-testid={`link-decision-${activity.decisionReference}`}
+                    >
+                      Buka keputusan
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </div>
+                )}
               </div>
             </div>
           ))}

@@ -113,12 +113,14 @@ export interface ReviewCompletionInput {
 }
 
 export interface Activity {
-  id: number;
+  id: string;
   actor: string;
   action: string;
   target: string;
   timestamp: string;
   tone: string;
+  decisionReference?: string;
+  packageId?: number;
 }
 
 export interface Provision {

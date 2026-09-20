@@ -3,6 +3,7 @@ import { and, desc, eq, ilike } from "drizzle-orm";
 import {
   activitiesTable,
   db,
+  decisionReferencesTable,
   epurchasingReviewsTable,
   procurementPackagesTable,
   regulationsTable,
@@ -297,15 +298,59 @@ router.post(
 );
 
 router.get("/activity", async (_req, res): Promise<void> => {
-  const rows = await db
-    .select()
-    .from(activitiesTable)
-    .orderBy(desc(activitiesTable.timestamp))
-    .limit(20);
+  const [rows, decisions] = await Promise.all([
+    db
+      .select()
+      .from(activitiesTable)
+      .orderBy(desc(activitiesTable.timestamp))
+      .limit(20),
+    db
+      .select({
+        id: decisionReferencesTable.id,
+        entityId: decisionReferencesTable.entityId,
+        evaluatedAt: decisionReferencesTable.evaluatedAt,
+        evaluatedBy: decisionReferencesTable.evaluatedBy,
+        actorType: decisionReferencesTable.actorType,
+        evaluationResult: decisionReferencesTable.evaluationResult,
+      })
+      .from(decisionReferencesTable)
+      .where(eq(decisionReferencesTable.entityType, "PROCUREMENT_PACKAGE"))
+      .orderBy(desc(decisionReferencesTable.evaluatedAt))
+      .limit(20),
+  ]);
+
+  const activity = [
+    ...rows.map((row) => ({
+      ...row,
+      id: `activity-${row.id}`,
+      timestamp: iso(row.timestamp),
+    })),
+    ...decisions.flatMap((decision) => {
+      const packageId = Number(decision.entityId);
+      if (!Number.isSafeInteger(packageId) || packageId <= 0) return [];
+
+      return [{
+        id: `decision-${decision.id}`,
+        actor: decision.evaluatedBy ?? decision.actorType,
+        action: "mengevaluasi kepatuhan",
+        target: `Paket #${packageId}`,
+        timestamp: iso(decision.evaluatedAt),
+        tone:
+          decision.evaluationResult.status === "COMPLIANT"
+            ? "positive"
+            : decision.evaluationResult.status === "NON_COMPLIANT"
+              ? "negative"
+              : "neutral",
+        decisionReference: decision.id,
+        packageId,
+      }];
+    }),
+  ]
+    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
+    .slice(0, 20);
+
   res.json(
-    ListActivityResponse.parse(
-      rows.map((row) => ({ ...row, timestamp: iso(row.timestamp) })),
-    ),
+    ListActivityResponse.parse(activity),
   );
 });
 

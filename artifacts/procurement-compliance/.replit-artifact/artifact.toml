@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Procurement Compliance Platform"
+description = "Platform pendamping pengadaan untuk PPK, Pejabat Pengadaan, UKPBJ, penyedia, dan tim BUMN/BUMD. Membantu mengelola paket, memeriksa kepatuhan Perpres 46/2025, menyiapkan reviu e-purchasing, dan menjaga jejak audit."
+version = "1.0.0"
+id = "artifacts/procurement-compliance"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25393
+
+[services.development]
+run = "pnpm --filter @workspace/procurement-compliance run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/procurement-compliance", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/procurement-compliance/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25393"
+BASE_PATH = "/"

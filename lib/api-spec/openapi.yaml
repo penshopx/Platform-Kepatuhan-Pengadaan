@@ -10,6 +10,16 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: dashboard
+    description: Procurement workspace overview
+  - name: packages
+    description: Procurement package management
+  - name: regulations
+    description: Regulatory references
+  - name: reviews
+    description: Compliance review checklists
+  - name: activity
+    description: Workspace activity timeline
 paths:
   /healthz:
     get:
@@ -24,7 +34,168 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [dashboard]
+      summary: Get procurement workspace summary
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+  /packages:
+    get:
+      operationId: listPackages
+      tags: [packages]
+      summary: List procurement packages
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Procurement packages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProcurementPackage"
+    post:
+      operationId: createPackage
+      tags: [packages]
+      summary: Create a procurement package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageInput"
+      responses:
+        "201":
+          description: Created procurement package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcurementPackage"
+  /packages/{id}:
+    get:
+      operationId: getPackage
+      tags: [packages]
+      summary: Get a procurement package
+      parameters:
+        - $ref: "#/components/parameters/PackageId"
+      responses:
+        "200":
+          description: Procurement package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcurementPackageDetail"
+        "404":
+          description: Package not found
+    patch:
+      operationId: updatePackage
+      tags: [packages]
+      summary: Update a procurement package
+      parameters:
+        - $ref: "#/components/parameters/PackageId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageUpdate"
+      responses:
+        "200":
+          description: Updated procurement package
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcurementPackage"
+  /regulations:
+    get:
+      operationId: listRegulations
+      tags: [regulations]
+      summary: List regulatory references
+      responses:
+        "200":
+          description: Regulatory references
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Regulation"
+  /reviews/epurchasing:
+    get:
+      operationId: listEpurchasingReviews
+      tags: [reviews]
+      summary: List e-purchasing review workpapers
+      responses:
+        "200":
+          description: E-purchasing review workpapers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EpurchasingReview"
+  /reviews/epurchasing/{id}/complete:
+    post:
+      operationId: completeEpurchasingReview
+      tags: [reviews]
+      summary: Mark an e-purchasing review item complete
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: item
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated review workpaper
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EpurchasingReview"
+  /activity:
+    get:
+      operationId: listActivity
+      tags: [activity]
+      summary: List recent workspace activity
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Activity"
 components:
+  parameters:
+    PackageId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +204,217 @@ components:
           type: string
       required:
         - status
+    Dashboard:
+      type: object
+      required:
+        - totalPackages
+        - activePackages
+        - reviewReady
+        - complianceRate
+        - totalBudget
+        - budgetByMethod
+      properties:
+        totalPackages:
+          type: integer
+        activePackages:
+          type: integer
+        reviewReady:
+          type: integer
+        complianceRate:
+          type: number
+        totalBudget:
+          type: number
+        budgetByMethod:
+          type: array
+          items:
+            $ref: "#/components/schemas/BudgetBucket"
+    BudgetBucket:
+      type: object
+      required: [label, value, color]
+      properties:
+        label:
+          type: string
+        value:
+          type: number
+        color:
+          type: string
+    ProcurementPackage:
+      type: object
+      required:
+        - id
+        - code
+        - title
+        - agency
+        - method
+        - status
+        - budget
+        - pdnTarget
+        - compliance
+        - dueDate
+        - owner
+        - updatedAt
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        title:
+          type: string
+        agency:
+          type: string
+        method:
+          type: string
+        status:
+          type: string
+        budget:
+          type: number
+        pdnTarget:
+          type: number
+        compliance:
+          type: number
+        dueDate:
+          type: string
+        owner:
+          type: string
+        updatedAt:
+          type: string
+    ProcurementPackageDetail:
+      allOf:
+        - $ref: "#/components/schemas/ProcurementPackage"
+        - type: object
+          required:
+            - description
+            - steps
+            - documents
+          properties:
+            description:
+              type: string
+            steps:
+              type: array
+              items:
+                $ref: "#/components/schemas/PackageStep"
+            documents:
+              type: array
+              items:
+                $ref: "#/components/schemas/PackageDocument"
+    PackageStep:
+      type: object
+      required: [label, status]
+      properties:
+        label:
+          type: string
+        status:
+          type: string
+        date:
+          type: ["string", "null"]
+    PackageDocument:
+      type: object
+      required: [name, type, status]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+    PackageInput:
+      type: object
+      required: [title, agency, method, budget, owner]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        agency:
+          type: string
+          minLength: 1
+        method:
+          type: string
+          minLength: 1
+        budget:
+          type: number
+          minimum: 0
+        owner:
+          type: string
+          minLength: 1
+        dueDate:
+          type: string
+    PackageUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+        compliance:
+          type: number
+        pdnTarget:
+          type: number
+        dueDate:
+          type: string
+        owner:
+          type: string
+    Regulation:
+      type: object
+      required: [id, title, type, status, summary, updatedAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        summary:
+          type: string
+        updatedAt:
+          type: string
+    EpurchasingReview:
+      type: object
+      required: [id, packageCode, packageTitle, status, completed, total, updatedAt, items]
+      properties:
+        id:
+          type: integer
+        packageCode:
+          type: string
+        packageTitle:
+          type: string
+        status:
+          type: string
+        completed:
+          type: integer
+        total:
+          type: integer
+        updatedAt:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReviewItem"
+    ReviewItem:
+      type: object
+      required: [id, label, group, completed]
+      properties:
+        id:
+          type: integer
+        label:
+          type: string
+        group:
+          type: string
+        completed:
+          type: boolean
+    Activity:
+      type: object
+      required: [id, actor, action, target, timestamp, tone]
+      properties:
+        id:
+          type: integer
+        actor:
+          type: string
+        action:
+          type: string
+        target:
+          type: string
+        timestamp:
+          type: string
+        tone:
+          type: string
 

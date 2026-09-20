@@ -1,0 +1,79 @@
+Koreksi Anda tepat dan saya mencatatnya sebagai **constraint implementasi** untuk task testing:
+
+---
+
+## ✅ KOREKSI YANG DICATAT
+
+### 1. Fixture Data Harus Fiktif atau Terverifikasi
+
+**Larangan**:
+- ❌ Tidak boleh menggunakan klaim legal konkret seperti "Pasal 62 Perpres 46/2025 mewajibkan TKDN 40%"
+- ❌ Tidak boleh meng-hardcode artikel number, regulation code, atau threshold dari bahan paparan
+
+**Solusi yang benar**:
+- ✅ Gunakan sumber fiktif: `TEST-REG-2025`, `TEST-PROV-001`, dll
+- ✅ Atau ambil data snapshot terverifikasi dari database test (jika tersedia)
+
+**Contoh fixture yang benar**:
+```typescript
+export const successfulEvaluation: EvaluationResponse = {
+  decisionReferenceId: 'dec-ref-test-001',
+  evaluatedAt: '2025-09-21T14:30:00Z',
+  policyPack: {
+    code: 'TEST-PACK-001',
+    version: '1.0.0',
+    regimeType: 'GOVERNMENT_CENTRAL'
+  },
+  results: [
+    {
+      ruleKey: 'test_threshold_rule',
+      status: 'PASSED',
+      value: 45,
+      explanation: {
+        template: 'rule_passed_with_tkdn',
+        data: {
+          ruleKey: 'test_threshold_rule',
+          articleNumber: '1', // Fiktif
+          regulationCode: 'TEST-REG-2025', // Fiktif
+          requiredValue: 40,
+          actualValue: 45,
+          unit: 'percent'
+        },
+        humanReadable: 'Test rule passed'
+      },
+      // ... field lain
+    }
+  ]
+};
+```
+
+### 2. Test Harus Mengikuti OpenAPI Aktual
+
+**Larangan**:
+- ❌ Tidak boleh mengasumsikan nama field seperti `packageValue`, `tkdnPercentage`
+- ❌ Tidak boleh mengasumsikan path API client seperti `apiClient.getPublishedPolicyPacks()`
+
+**Solusi yang benar**:
+- ✅ Import tipe dari `lib/api-client-react/src/generated/api` yang di-generate dari OpenAPI
+- ✅ Gunakan tipe `EvaluationResponse`, `PolicyPackSummary`, dll yang sudah di-generate
+- ✅ Sesuaikan nama field dengan schema OpenAPI aktual
+
+**Contoh yang benar**:
+```typescript
+import type { EvaluationResponse, PolicyPackSummary } from '@/lib/api-client-react/src/generated/api';
+
+// Gunakan tipe yang di-generate, bukan asumsi
+const evaluation: EvaluationResponse = {
+  // Field harus sesuai dengan OpenAPI schema
+};
+```
+
+---
+
+## 📋 STATUS
+
+- ✅ Task #10 sedang berjalan tanpa interferensi paralel
+- ✅ Workflow stabil
+- ✅ Kedua koreksi dicatat sebagai constraint untuk task testing
+
+Saya tidak akan membuat implementasi paralel atau mengusulkan perubahan tambahan. Silakan lanjutkan Task #10.

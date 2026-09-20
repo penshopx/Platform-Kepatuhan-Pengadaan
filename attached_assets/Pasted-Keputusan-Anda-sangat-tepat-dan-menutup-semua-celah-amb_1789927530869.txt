@@ -1,0 +1,402 @@
+Keputusan Anda sangat tepat dan menutup semua celah ambiguitas. Berikut saya jabarkan **implikasi teknis konkret** dari setiap keputusan, yang dapat langsung dijadikan acuan implementasi Task #3 dan #4.
+
+---
+
+## 📋 IMPLIKASI TEKNIS PER KEPUTUSAN
+
+### 1. Clerk sebagai Sumber Identitas
+
+**Implikasi arsitektural:**
+- Middleware Clerk wajib di semua endpoint `POST/PATCH/DELETE` pada `/api/admin/*` dan `/api/rules/evaluate`
+- Session variables PostgreSQL harus di-set dari Clerk user, bukan dari request body
+
+**Pola implementasi di API server:**
+
+```typescript
+// artifacts/api-server/src/middleware/clerk-audit.ts
+import { getAuth } from '@clerk/express';
+import { db } from '@procurement/db';
+import { sql } from 'drizzle-orm';
+
+export async function setAuditContext(req, res, next) {
+  const { userId, orgId } = getAuth(req);
+  
+  if (!userId) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const reason = req.body?.reason || req.headers['x-audit-reason'];
+  if (!reason && ['PATCH', 'DELETE', 'POST'].includes(req.method)) {
+    // Reason wajib untuk operasi mutasi kritis
+    const criticalPaths = ['/admin/legal-sources', '/admin/business-rules', 
+                           '/admin/policy-packs', '/rules/evaluate'];
+    if (criticalPaths.some(p => req.path.startsWith(p))) {
+      return res.status(400).json({ error: 'X-Audit-Reason header or body.reason required' });
+    }
+  }
+
+  // Set PostgreSQL session variables
+  await db.execute(sql`
+    SELECT set_audit_context(
+      ${userId}::uuid,
+      'USER',
+      ${req.headers['x-actor-role'] || 'ADMIN'}::text,
+      ${reason || ''}::text
+    )
+  `);
+
+  req.auditContext = { userId, orgId, reason };
+  next();
+}
+```
+
+**Konsekuensi pada skema:**
+- Kolom `verifiedBy`, `publishedBy`, `evaluatedBy`, `actorId` sekarang **de facto NOT NULL** di level aplikasi (meskipun DB masih nullable untuk kompatibilitas data seed lama)
+- Tambahkan validasi di layer service: tolak operasi jika `userId` tidak tersedia
+
+---
+
+### 2. Input Manual Pasal (Import Massal Ditunda)
+
+**Implikasi UI:**
+- Form input pasal harus memiliki **validasi ketat per field**:
+  - `articleNumber`: regex `^\d+([a-z])?$` (misal: "45", "45a")
+  - `clauseType`: dropdown terbatas (`ayat`, `huruf`, `angka`, `butir`)
+  - `rawText`: textarea dengan minimum 20 karakter (mencegah placeholder)
+  - `provisionType`: dropdown (`DEFINITION`, `OBLIGATION`, `PROHIBITION`, `PROCEDURE`, `THRESHOLD`, `FORMULA`, `SANCTION`)
+
+**Pola komponen:**
+
+```tsx
+// artifacts/procurement-compliance/src/components/provision-form.tsx
+export function ProvisionForm({ sourceId }) {
+  const [form, setForm] = useState({
+    articleNumber: '',
+    clauseType: '',
+    provisionType: '',
+    rawText: '',
+    sourceCategory: 'REGULATION'
+  });
+
+  const validate = () => {
+    const errors = {};
+    if (!/^\d+([a-z])?$/.test(form.articleNumber)) {
+      errors.articleNumber = 'Format: angka, opsional diikuti huruf (misal: 45, 45a)';
+    }
+    if (form.rawText.trim().length < 20) {
+      errors.rawText = 'Teks pasal minimal 20 karakter';
+    }
+    return errors;
+  };
+
+  // Submit hanya jika valid
+}
+```
+
+**Konsekuensi:**
+- Tidak perlu endpoint `/import` sekarang
+- Tapi skema `provisions` sudah siap (tidak ada field khusus manual) sehingga import massal bisa ditambahkan nanti tanpa migrasi
+
+---
+
+### 3. Penjelasan Terstruktur (Bukan HTML/Markdown)
+
+**Implikasi pada OpenAPI — revisi `RuleEvaluationResult`:**
+
+```yaml
+RuleEvaluationResult:
+  type: object
+  required: [ruleKey, status, explanation]
+  properties:
+    ruleKey: { type: string }
+    status:
+      type: string
+      enum: [APPLICABLE, NOT_APPLICABLE, PASSED, FAILED, ERROR]
+    value:
+      description: Nilai hasil evaluasi
+    explanation:
+      type: object
+      required: [template, data]
+      properties:
+        template:
+          type: string
+          description: |
+            Kunci template terstruktur. UI merender berdasarkan kunci ini.
+            Contoh: "rule_passed_with_tkdn", "threshold_exceeded", 
+            "method_not_applicable", "formula_evaluated"
+          enum:
+            - rule_passed_with_tkdn
+            - rule_failed_with_tkdn
+            - threshold_exceeded
+            - threshold_within_limit
+            - method_not_applicable
+            - formula_evaluated
+            - validation_failed
+            - override_applied
+        data:
+          type: object
+          additionalProperties: true
+          description: Data untuk render template
+          example:
+            ruleKey: "tkdn_min_threshold_construction"
+            articleNumber: "62"
+            regulationCode: "PERPRES-46-2025"
+            requiredValue: 40
+            actualValue: 45
+            unit: "percent"
+        humanReadable:
+          type: string
+          description: |
+            Fallback teks untuk logging/audit. UI boleh mengabaikan 
+            dan merender sendiri dari template+data.
+```
+
+**Implikasi UI:**
+
+```tsx
+// artifacts/procurement-compliance/src/components/explanation-renderer.tsx
+const templates = {
+  rule_passed_with_tkdn: (data) => (
+    <div>
+      <p>Aturan <code>{data.ruleKey}</code> dari Pasal {data.articleNumber} {data.regulationCode} terpenuhi.</p>
+      <p>TKDN minimal: <strong>{data.requiredValue}{data.unit}</strong></p>
+      <p>TKDN aktual: <strong>{data.actualValue}{data.unit}</strong> ✓</p>
+    </div>
+  ),
+  threshold_exceeded: (data) => (
+    <div>
+      <p>Nilai paket <strong>Rp {data.packageValue.toLocaleString()}</strong> melebihi ambang <strong>Rp {data.threshold.toLocaleString()}</strong>.</p>
+      <p>Metode {data.requiredMethod} tidak dapat digunakan.</p>
+    </div>
+  ),
+  // ... template lain
+};
+
+export function ExplanationRenderer({ explanation }) {
+  const Template = templates[explanation.template];
+  if (!Template) {
+    return <pre>{explanation.humanReadable}</pre>; // Fallback
+  }
+  return Template(explanation.data);
+}
+```
+
+**Keuntungan:**
+- Aman dari XSS (tidak ada HTML dari server)
+- Mudah di-i18n (template bisa diterjemahkan)
+- Audit-friendly (data terstruktur bisa di-query)
+
+---
+
+### 4. Endpoint `GET /api/decisions/{id}`
+
+**OpenAPI specification:**
+
+```yaml
+paths:
+  /api/decisions/{id}:
+    get:
+      operationId: getDecisionReference
+      summary: Ambil decision reference untuk audit/review
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Decision reference lengkap
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionReferenceDetail'
+        '404':
+          description: Decision tidak ditemukan
+
+components:
+  schemas:
+    DecisionReferenceDetail:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        entityType: { type: string }
+        entityId: { type: string }
+        evaluatedAt: { type: string, format: date-time }
+        actorType: { type: string }
+        evaluatedBy: 
+          type: string
+          description: Clerk user ID
+        evaluatedByProfile:
+          type: object
+          description: Profil user dari Clerk (jika tersedia)
+          properties:
+            name: { type: string }
+            email: { type: string }
+        policyPack:
+          type: object
+          properties:
+            id: { type: string }
+            code: { type: string }
+            version: { type: string }
+            regimeType: { type: string }
+            status: { type: string }
+        evaluationInput:
+          type: object
+          description: Konteks yang digunakan saat evaluasi
+        evaluationResult:
+          type: object
+          description: Hasil evaluasi lengkap (array of RuleEvaluationResult)
+        snapshot:
+          type: object
+          description: Snapshot aturan, sumber, dan pasal yang dirujuk
+        reproducibilityCheck:
+          type: object
+          description: |
+            Metadata untuk verifikasi reproduktibilitas
+          properties:
+            policyPackStillPublished: { type: boolean }
+            rulesStillAvailable: { type: boolean }
+            sourcesStillVerified: { type: boolean }
+```
+
+**Implikasi handler:**
+
+```typescript
+// artifacts/api-server/src/routes/decisions.ts
+export async function getDecisionHandler(req, res) {
+  const { id } = req.params;
+  const { userId } = getAuth(req);
+
+  const decision = await db.query.decisionReferences.findFirst({
+    where: eq(decisionReferences.id, id),
+    with: {
+      policyPack: {
+        columns: { id: true, packName: true, version: true, regimeType: true, status: true }
+      }
+    }
+  });
+
+  if (!decision) {
+    return res.status(404).json({ error: 'Decision not found' });
+  }
+
+  // Cek reproduktibilitas
+  const reproducibility = await checkReproducibility(decision);
+
+  // Ambil profil Clerk
+  const evaluatedByProfile = decision.evaluatedBy 
+    ? await clerkClient.users.getUser(decision.evaluatedBy)
+    : null;
+
+  return res.json({
+    ...decision,
+    evaluatedByProfile: evaluatedByProfile ? {
+      name: `${evaluatedByProfile.firstName} ${evaluatedByProfile.lastName}`,
+      email: evaluatedByProfile.emailAddresses[0]?.emailAddress
+    } : null,
+    reproducibilityCheck: reproducibility
+  });
+}
+```
+
+---
+
+### 5. Invariant: Evaluasi Hanya Baca Snapshot
+
+**Ini adalah invariant paling kritis.** Harus dijaga di 3 lapisan:
+
+**A. Level database (sudah ada):**
+- Trigger `protect_published_pack_rules` mencegah perubahan aturan di pack PUBLISHED
+- `policy_pack_rules.snapshot` wajib terisi untuk pack PUBLISHED
+
+**B. Level service (wajib ditambahkan):**
+
+```typescript
+// lib/db/src/rules/engine/evaluator.ts
+export async function evaluateWithContext(packId: string, context: EvaluationContext) {
+  // 1. Ambil pack
+  const pack = await db.query.policyPacks.findFirst({
+    where: eq(policyPacks.id, packId)
+  });
+
+  if (!pack || pack.status !== 'PUBLISHED') {
+    throw new Error('Only PUBLISHED policy packs can be evaluated');
+  }
+
+  // 2. Ambil RULES + SNAPSHOT, bukan business_rules live
+  const packRules = await db.select({
+    packRule: policyPackRules,
+    // Snapshot sudah mengandung semua yang dibutuhkan
+  }).from(policyPackRules)
+    .where(eq(policyPackRules.policyPackId, packId));
+
+  // 3. Validasi: semua snapshot harus terisi
+  for (const pr of packRules) {
+    if (!pr.packRule.snapshot) {
+      throw new Error(`Snapshot missing for rule ${pr.packRule.businessRuleId}`);
+    }
+  }
+
+  // 4. Evaluasi menggunakan snapshot, bukan live data
+  return packRules.map(pr => evaluateFromSnapshot(pr.packRule.snapshot, context));
+}
+
+function evaluateFromSnapshot(snapshot: any, context: EvaluationContext) {
+  // Gunakan snapshot.value, snapshot.formulaAst, snapshot.source, snapshot.provision
+  // JANGAN query ke business_rules, legal_sources, atau provisions
+  // ...
+}
+```
+
+**C. Level test (wajib ditambahkan):**
+
+```typescript
+// lib/db/src/rules/tests/snapshot-invariant.test.ts
+test('evaluasi tidak terpengaruh oleh perubahan aturan live', async () => {
+  // 1. Buat pack dengan aturan (default_value = 100)
+  // 2. Publish pack
+  // 3. Evaluasi → hasil berdasarkan snapshot (100)
+  // 4. Ubah business_rules.default_value menjadi 200 (buat versi baru)
+  // 5. Evaluasi ulang pack yang sama → hasil MASIH berdasarkan snapshot (100)
+  // 6. Buat pack versi baru, publish, evaluasi → hasil berdasarkan snapshot baru (200)
+});
+```
+
+---
+
+## ✅ INVARIANT CHECKLIST
+
+Sebelum Task #3 dan #4 dianggap selesai, pastikan semua invariant ini terpenuhi:
+
+| # | Invariant | Cara Verifikasi |
+|---|-----------|-----------------|
+| 1 | Evaluasi hanya membaca snapshot, bukan live rules | Test: ubah aturan live, evaluasi pack lama tidak berubah |
+| 2 | Hanya pack PUBLISHED yang bisa dievaluasi | Test: coba evaluasi DRAFT → 404 |
+| 3 | Setiap evaluasi menghasilkan decision_reference | Query: `SELECT COUNT(*) FROM decision_references` naik setelah evaluasi |
+| 4 | Decision_reference tidak bisa diubah | Test: `UPDATE decision_references` → trigger menolak |
+| 5 | Semua mutasi kritis tercatat di audit_log dengan actor dari Clerk | Test: cek `audit_logs.actor_id` = Clerk user ID |
+| 6 | Semua mutasi kritis memiliki reason | Test: request tanpa reason → 400 |
+| 7 | Publish gagal jika ada sumber mengikat UNVERIFIED | Test: publish pack dengan sumber UNVERIFIED → 422 + daftar blokade |
+| 8 | Published pack tidak bisa diubah isinya | Test: `UPDATE policy_packs SET pack_name` → trigger menolak |
+| 9 | Published pack hanya bisa transisi ke RETIRED | Test: transisi ke DRAFT → trigger menolak |
+| 10 | Explanation selalu terstruktur (template + data) | Test: response evaluasi memiliki `explanation.template` dan `explanation.data` |
+| 11 | `GET /api/decisions/{id}` mengembalikan snapshot lengkap | Test: response mencakup input, result, snapshot, reproducibility |
+| 12 | UI admin menampilkan VerificationBadge di setiap sumber/pasal/aturan | Visual check |
+| 13 | UI admin menampilkan VersionTimeline untuk business_rules | Visual check |
+| 14 | UI admin menampilkan PublishConfirmation dengan daftar blokade jika ada | Visual check |
+
+---
+
+## 🎯 STATUS DAN LANGKAH SELANJUTNYA
+
+Task #3 dan #4 sudah berjalan dengan acuan yang jelas. Saya tidak akan mengusulkan perubahan tambahan kecuali Anda menemukan inkonsistensi saat implementasi.
+
+**Pertanyaan terbuka (opsional, hanya jika relevan):**
+
+1. Apakah `GET /api/decisions/{id}` perlu **authorization khusus** (misal: hanya actor yang membuat, admin, atau auditor yang bisa akses)? Atau cukup autentikasi Clerk saja?
+
+2. Untuk `reproducibilityCheck` di response decision, apakah perlu juga mengecek apakah **policy pack masih PUBLISHED** (bukan RETIRED)? Jika RETIRED, decision masih valid secara historis tapi tidak bisa direproduksi untuk paket baru.
+
+3. Apakah perlu endpoint `GET /api/decisions?entityType=...&entityId=...` untuk **mencari decision berdasarkan entitas** (misal: semua evaluasi untuk paket tender tertentu)?
+
+Silakan lanjutkan implementasi. Saya siap membantu jika ada inkonsistensi yang ditemukan di tengah jalan.

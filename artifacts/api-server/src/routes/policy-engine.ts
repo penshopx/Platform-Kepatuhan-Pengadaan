@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import {
   businessRulesTable,
   db,
@@ -13,6 +13,7 @@ import {
 import {
   EvaluateRulesBody,
   EvaluateRulesResponse,
+  ListPublishedPolicyPacksResponse,
   PublishPolicyPackHeader,
   PublishPolicyPackParams,
   PublishPolicyPackResponse,
@@ -26,6 +27,38 @@ import {
 import { authenticateSignedActor } from "../lib/signed-actor";
 
 const router: IRouter = Router();
+
+router.get("/published-policy-packs", async (_req, res): Promise<void> => {
+  const packs = await db
+    .select({
+      id: policyPacksTable.id,
+      packName: policyPacksTable.packName,
+      regimeType: policyPacksTable.regimeType,
+      version: policyPacksTable.version,
+      status: policyPacksTable.status,
+      publishedAt: policyPacksTable.publishedAt,
+      publishedBy: policyPacksTable.publishedBy,
+      ruleCount: count(policyPackRulesTable.id),
+    })
+    .from(policyPacksTable)
+    .leftJoin(
+      policyPackRulesTable,
+      eq(policyPackRulesTable.policyPackId, policyPacksTable.id),
+    )
+    .where(eq(policyPacksTable.status, "PUBLISHED"))
+    .groupBy(policyPacksTable.id)
+    .orderBy(policyPacksTable.packName, policyPacksTable.version);
+
+  res.json(
+    ListPublishedPolicyPacksResponse.parse(
+      packs.map((pack) => ({
+        ...pack,
+        status: "PUBLISHED",
+        publishedAt: pack.publishedAt?.toISOString(),
+      })),
+    ),
+  );
+});
 
 router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {
   const params = PublishPolicyPackParams.safeParse(req.params);

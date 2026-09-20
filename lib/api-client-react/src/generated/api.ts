@@ -1394,6 +1394,84 @@ export const useCreateBusinessRule = <TError = ErrorType<unknown>,
       return useMutation(getCreateBusinessRuleMutationOptions(options));
     }
 
+export const getListPublishedPolicyPacksUrl = () => {
+
+
+
+
+  return `/api/published-policy-packs`
+}
+
+/**
+ * Returns only published policy packs and their rule counts for package evaluation.
+ * @summary List policy packs available for evaluation
+ */
+export const listPublishedPolicyPacks = async ( options?: Parameters<typeof customFetch>[1]): Promise<PublishedPolicyPack[]> => {
+
+  return customFetch<PublishedPolicyPack[]>(getListPublishedPolicyPacksUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListPublishedPolicyPacksQueryKey = () => {
+    return [
+    `/api/published-policy-packs`
+    ] as const;
+    }
+
+
+export const getListPublishedPolicyPacksQueryOptions = <TData = Awaited<ReturnType<typeof listPublishedPolicyPacks>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPublishedPolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListPublishedPolicyPacksQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPublishedPolicyPacks>>> = ({ signal }) => listPublishedPolicyPacks({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPublishedPolicyPacks>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListPublishedPolicyPacksQueryResult = NonNullable<Awaited<ReturnType<typeof listPublishedPolicyPacks>>>
+export type ListPublishedPolicyPacksQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List policy packs available for evaluation
+ */
+
+export function useListPublishedPolicyPacks<TData = Awaited<ReturnType<typeof listPublishedPolicyPacks>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPublishedPolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListPublishedPolicyPacksQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
 export const getListPolicyPacksUrl = () => {
 
 

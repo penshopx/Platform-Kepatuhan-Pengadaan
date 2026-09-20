@@ -496,6 +496,26 @@ export const CreateBusinessRuleResponse = zod.object({
 
 
 /**
+ * Returns only published policy packs and their rule counts for package evaluation.
+ * @summary List policy packs available for evaluation
+ */
+
+
+
+export const ListPublishedPolicyPacksResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['PUBLISHED']),
+  "publishedAt": zod.coerce.date(),
+  "publishedBy": zod.string(),
+  "ruleCount": zod.number().int().min(1)
+})
+export const ListPublishedPolicyPacksResponse = zod.array(ListPublishedPolicyPacksResponseItem)
+
+
+/**
  * @summary List policy packs
  */
 export const ListPolicyPacksResponseItem = zod.object({

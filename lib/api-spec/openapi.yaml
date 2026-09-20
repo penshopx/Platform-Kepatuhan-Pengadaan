@@ -301,6 +301,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BusinessRule"
+  /published-policy-packs:
+    get:
+      operationId: listPublishedPolicyPacks
+      tags: [policy-packs]
+      summary: List policy packs available for evaluation
+      description: Returns only published policy packs and their rule counts for package evaluation.
+      responses:
+        "200":
+          description: Published policy packs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PublishedPolicyPack"
   /policy-packs:
     get:
       operationId: listPolicyPacks

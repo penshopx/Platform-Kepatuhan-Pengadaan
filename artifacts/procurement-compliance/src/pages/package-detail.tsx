@@ -16,6 +16,7 @@ import {
   Download
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { PackageComplianceEvaluation } from "@/components/package-compliance-evaluation";
 
 function Badge({ children, variant = "default", className = "" }: { children: React.ReactNode, variant?: string, className?: string }) {
   const variants: Record<string, string> = {
@@ -289,6 +290,8 @@ export default function PackageDetail() {
           </div>
         </div>
       </div>
+
+      <PackageComplianceEvaluation pkg={pkg} />
     </div>
   );
 }

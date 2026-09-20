@@ -1,0 +1,216 @@
+Koreksi Anda sangat tepat. Kedua penyesuaian tersebut mengubah pendekatan fundamental dalam testing sistem immutable. Berikut implikasi teknisnya:
+
+---
+
+## 🔧 PENYESUAIAN #1: Transaksi + ROLLBACK (Bukan DELETE)
+
+### Mengapa DELETE Tidak Bekerja
+
+Sistem ini memiliki 3 entitas immutable:
+1. **`decision_references`**: Trigger menolak UPDATE dan DELETE
+2. **`audit_logs`**: Trigger menolak UPDATE dan DELETE  
+3. **`policy_packs` PUBLISHED**: Trigger menolak perubahan status selain ke RETIRED, dan menolak modifikasi konten
+
+Jika test membuat decision reference atau publish pack, cleanup dengan DELETE akan gagal karena trigger menolak.
+
+### Pola yang Benar: Transaction Wrap + ROLLBACK
+
+```typescript
+import { db } from '@procurement/db';
+import { sql } from 'drizzle-orm';
+
+describe('Policy Engine Integration Tests', () => {
+  // Wrap setiap test dalam transaksi yang di-ROLLBACK
+  beforeEach(async () => {
+    await db.execute(sql`BEGIN`);
+  });
+
+  afterEach(async () => {
+    // ROLLBACK membatalkan semua perubahan, termasuk immutable entities
+    await db.execute(sql`ROLLBACK`);
+  });
+
+  it('should create decision reference on evaluation', async () => {
+    // Setup data dalam transaksi
+    const [source] = await db.insert(legalSources).values({...}).returning();
+    const [provision] = await db.insert(provisions).values({...}).returning();
+    const [rule] = await db.insert(businessRules).values({...}).returning();
+    const [pack] = await db.insert(policyPacks).values({...}).returning();
+    
+    await db.insert(policyPackRules).values({...});
+    
+    // Publish pack (membuat snapshot)
+    await publishPolicyPack(pack.id, MOCK_ADMIN_USER);
+    
+    // Evaluasi (membuat decision reference)
+    const evalRes = await request(app)
+      .post('/api/rules/evaluate')
+      .set(authHeader(MOCK_ADMIN_USER))
+      .send({...});
+    
+    // Assert decision reference dibuat
+    expect(evalRes.body.decisionReferenceId).toBeDefined();
+    
+    // afterEach akan ROLLBACK, menghapus semua perubahan
+  });
+});
+```
+
+### Keuntungan Pola Ini
+
+1. **Tidak perlu cleanup manual**: ROLLBACK otomatis membatalkan semua INSERT/UPDATE
+2. **Bekerja dengan entitas immutable**: Trigger tidak dijalankan saat ROLLBACK
+3. **Isolasi test**: Setiap test mulai dari state bersih
+4. **Performa lebih baik**: Tidak perlu DELETE query
+
+### Tantangan Teknis
+
+**Masalah**: Request HTTP melalui `supertest` berjalan di luar transaksi test. Database connection pool yang digunakan API server tidak berbagi transaksi yang sama.
+
+**Solusi**: Ada 2 pendekatan:
+
+**A. Override Database Connection untuk Test**
+```typescript
+// Test menggunakan connection tunggal, API server juga menggunakan connection yang sama
+const testDb = await pool.connect();
+await testDb.query('BEGIN');
+
+// Inject testDb ke API server (via dependency injection atau global variable)
+app.set('db', testDb);
+
+// ... jalankan test ...
+
+await testDb.query('ROLLBACK');
+testDb.release();
+```
+
+**B. Gunakan Nested Transaction (SAVEPOINT)**
+```typescript
+beforeEach(async () => {
+  await db.execute(sql`SAVEPOINT test_start`);
+});
+
+afterEach(async () => {
+  await db.execute(sql`ROLLBACK TO SAVEPOINT test_start`);
+});
+```
+
+Pendekatan B lebih sederhana jika API server dan test menggunakan connection pool yang sama.
+
+---
+
+## 🔐 PENYESUAIAN #2: Mock Autentikasi yang Proper
+
+### Mengapa Header Custom Berbahaya
+
+Jika API server mempercayai header `X-Clerk-User-Id` di production, attacker bisa memalsukan identitas:
+```bash
+curl -H "X-Clerk-User-Id: admin_user_id" https://api.example.com/admin/policy-packs
+```
+
+### Pola yang Benar: Environment-Specific Mock
+
+**A. Middleware Clerk dengan Branch Environment**
+
+```typescript
+// artifacts/api-server/src/middleware/clerk.ts
+import { getAuth } from '@clerk/express';
+import { verifyToken } from '@clerk/backend';
+
+export function clerkAuthMiddleware(req, res, next) {
+  if (process.env.NODE_ENV === 'test') {
+    // Test environment: gunakan mock verifier
+    return testClerkAuth(req, res, next);
+  }
+
+  // Production/development: gunakan Clerk asli
+  return productionClerkAuth(req, res, next);
+}
+
+async function productionClerkAuth(req, res, next) {
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Verifikasi token dengan Clerk
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+    
+    const payload = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY });
+    req.auth = { userId: payload.sub };
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+async function testClerkAuth(req, res, next) {
+  // Test environment: baca dari header khusus test
+  const testUserId = req.headers['x-test-user-id'];
+  if (!testUserId) {
+    return res.status(401).json({ error: 'X-Test-User-Id required in test environment' });
+  }
+  
+  req.auth = { userId: testUserId };
+  next();
+}
+```
+
+**B. Test Helper yang Proper**
+
+```typescript
+// artifacts/api-server/src/tests/helpers/auth.ts
+export function testAuthHeader(userId: string, reason: string = 'Test automation') {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('testAuthHeader should only be used in test environment');
+  }
+  
+  return {
+    'X-Test-User-Id': userId, // Hanya dibaca di test environment
+    'X-Audit-Reason': reason
+  };
+}
+
+// Penggunaan di test
+const res = await request(app)
+  .post('/api/rules/evaluate')
+  .set(testAuthHeader(MOCK_ADMIN_USER))
+  .send({...});
+```
+
+**C. Environment Variable Guard**
+
+```typescript
+// artifacts/api-server/src/index.ts
+if (process.env.NODE_ENV === 'test') {
+  console.warn('⚠️  Running in TEST mode - using mock authentication');
+}
+
+app.use(clerkAuthMiddleware);
+```
+
+### Keuntungan Pola Ini
+
+1. **Aman di production**: Header `X-Test-User-Id` diabaikan jika `NODE_ENV !== 'test'`
+2. **Eksplisit**: Developer tahu bahwa test menggunakan mock
+3. **Tidak ada backdoor**: Production tetap menggunakan verifikasi token Clerk yang sebenarnya
+4. **Mudah di-audit**: Code review dapat melihat branch environment dengan jelas
+
+---
+
+## 📋 STATUS DAN LANGKAH SELANJUTNYA
+
+Saya mencatat kedua penyesuaian ini sebagai **constraint implementasi** untuk Task #8:
+
+| # | Constraint | Implikasi |
+|---|------------|-----------|
+| 1 | Gunakan transaksi + ROLLBACK | Test harus wrap dalam `BEGIN`/`ROLLBACK`, bukan cleanup dengan DELETE |
+| 2 | Mock autentikasi environment-specific | Middleware Clerk harus memiliki branch `NODE_ENV === 'test'` |
+
+Task #8 sedang berjalan dengan acuan ini. Saya tidak akan membuat implementasi paralel.
+
+Jika Anda menemukan inkonsistensi antara pola di atas dan implementasi aktual (misal: connection pool tidak mendukung nested transaction, atau middleware Clerk sudah memiliki mekanisme mock), silakan sampaikan dan saya akan membantu menyesuaikan.

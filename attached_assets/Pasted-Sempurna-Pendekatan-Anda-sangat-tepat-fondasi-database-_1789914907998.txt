@@ -1,0 +1,1067 @@
+Sempurna. Pendekatan Anda **sangat tepat**: fondasi database harus terbukti solid sebelum membangun API di atasnya. Berikut adalah perbaikan lengkap berdasarkan 7 masalah yang Anda identifikasi, diikuti dengan **test cases komprehensif** untuk constraint dan trigger.
+
+---
+
+## 🔧 PERBAIKAN KRITIS
+
+### 1. PERBAIKAN MIGRASI SQL
+
+#### `src/db/migrations/0002_audit_triggers_and_constraints.sql` (Revisi)
+
+```sql
+-- ============================================
+-- 1. IMMUTABLE AUDIT LOGS
+-- ============================================
+
+CREATE OR REPLACE FUNCTION prevent_audit_log_modification()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'Audit logs are immutable and cannot be modified or deleted';
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER prevent_audit_log_update
+BEFORE UPDATE ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_modification();
+
+CREATE TRIGGER prevent_audit_log_delete
+BEFORE DELETE ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_log_modification();
+
+-- ============================================
+-- 2. AUTO-LOG PERUBAHAN TABEL KRITIS
+-- ============================================
+
+CREATE OR REPLACE FUNCTION log_table_changes()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_id UUID;
+  v_actor_type VARCHAR(20);
+  v_actor_role VARCHAR(50);
+  v_reason TEXT;
+  v_entity_id TEXT;
+BEGIN
+  v_actor_id := NULLIF(current_setting('app.actor_id', true), '')::UUID;
+  v_actor_type := COALESCE(NULLIF(current_setting('app.actor_type', true), ''), 'SYSTEM');
+  v_actor_role := COALESCE(NULLIF(current_setting('app.actor_role', true), ''), 'SYSTEM');
+  v_reason := NULLIF(current_setting('app.action_reason', true), '');
+
+  -- Operasi kritis wajib alasan
+  IF TG_OP IN ('UPDATE', 'DELETE') AND v_reason IS NULL THEN
+    RAISE EXCEPTION 'Reason is required for UPDATE/DELETE operations on %', TG_TABLE_NAME;
+  END IF;
+
+  -- Ambil entity_id dari NEW atau OLD
+  IF TG_OP = 'DELETE' THEN
+    v_entity_id := OLD.id::TEXT;
+  ELSE
+    v_entity_id := NEW.id::TEXT;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, new_state, reason)
+    VALUES (v_actor_id, v_actor_type, v_actor_role, 'CREATE', TG_TABLE_NAME, v_entity_id, to_jsonb(NEW), v_reason);
+    RETURN NEW;
+  ELSIF TG_OP = 'UPDATE' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, previous_state, new_state, reason)
+    VALUES (v_actor_id, v_actor_type, v_actor_role, 'UPDATE', TG_TABLE_NAME, v_entity_id, to_jsonb(OLD), to_jsonb(NEW), v_reason);
+    RETURN NEW;
+  ELSIF TG_OP = 'DELETE' THEN
+    INSERT INTO audit_logs (actor_id, actor_type, actor_role, action_type, entity_type, entity_id, previous_state, reason)
+    VALUES (v_actor_id, v_actor_type, v_actor_role, 'DELETE', TG_TABLE_NAME, v_entity_id, to_jsonb(OLD), v_reason);
+    RETURN OLD;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- PERBAIKAN #6: Tambahkan trigger untuk SEMUA tabel kritis
+CREATE TRIGGER audit_legal_sources
+AFTER INSERT OR UPDATE OR DELETE ON legal_sources
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_provisions
+AFTER INSERT OR UPDATE OR DELETE ON provisions
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_business_rules
+AFTER INSERT OR UPDATE OR DELETE ON business_rules
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_rule_conditions
+AFTER INSERT OR UPDATE OR DELETE ON rule_conditions
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_rule_overrides
+AFTER INSERT OR UPDATE OR DELETE ON rule_overrides
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_policy_packs
+AFTER INSERT OR UPDATE OR DELETE ON policy_packs
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_policy_pack_rules
+AFTER INSERT OR UPDATE OR DELETE ON policy_pack_rules
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+CREATE TRIGGER audit_decision_references
+AFTER INSERT OR UPDATE OR DELETE ON decision_references
+FOR EACH ROW EXECUTE FUNCTION log_table_changes();
+
+-- ============================================
+-- 3. PERBAIKAN #2: PROTEKSI POLICY PACK PUBLISHED
+-- Izinkan hanya transisi PUBLISHED → RETIRED tanpa perubahan field lain
+-- ============================================
+
+CREATE OR REPLACE FUNCTION protect_published_policy_pack()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Jika status lama adalah PUBLISHED
+  IF OLD.status = 'PUBLISHED' THEN
+    -- Hanya izinkan transisi ke RETIRED
+    IF NEW.status != 'RETIRED' THEN
+      RAISE EXCEPTION 'Published policy pack can only transition to RETIRED status, not to %', NEW.status;
+    END IF;
+
+    -- Pastikan tidak ada perubahan field lain selain status, updated_at
+    IF OLD.pack_name != NEW.pack_name OR
+       OLD.regime_type != NEW.regime_type OR
+       COALESCE(OLD.description, '') != COALESCE(NEW.description, '') OR
+       OLD.version != NEW.version OR
+       OLD.published_at IS DISTINCT FROM NEW.published_at OR
+       OLD.published_by IS DISTINCT FROM NEW.published_by THEN
+      RAISE EXCEPTION 'Cannot modify content of published policy pack. Only status can change to RETIRED.';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER protect_published_pack_update
+BEFORE UPDATE ON policy_packs
+FOR EACH ROW EXECUTE FUNCTION protect_published_policy_pack();
+
+-- ============================================
+-- 4. PERBAIKAN #3: PROTEKSI POLICY_PACK_RULES UNTUK PACK PUBLISHED
+-- ============================================
+
+CREATE OR REPLACE FUNCTION protect_published_pack_rules()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_pack_status VARCHAR(20);
+BEGIN
+  -- Ambil status policy pack
+  IF TG_OP = 'DELETE' THEN
+    SELECT status INTO v_pack_status FROM policy_packs WHERE id = OLD.policy_pack_id;
+  ELSE
+    SELECT status INTO v_pack_status FROM policy_packs WHERE id = NEW.policy_pack_id;
+  END IF;
+
+  -- Tolak semua operasi jika pack sudah PUBLISHED
+  IF v_pack_status = 'PUBLISHED' THEN
+    RAISE EXCEPTION 'Cannot modify rules of published policy pack. Create a new version instead.';
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER protect_published_pack_rules_insert
+BEFORE INSERT ON policy_pack_rules
+FOR EACH ROW EXECUTE FUNCTION protect_published_pack_rules();
+
+CREATE TRIGGER protect_published_pack_rules_update
+BEFORE UPDATE ON policy_pack_rules
+FOR EACH ROW EXECUTE FUNCTION protect_published_pack_rules();
+
+CREATE TRIGGER protect_published_pack_rules_delete
+BEFORE DELETE ON policy_pack_rules
+FOR EACH ROW EXECUTE FUNCTION protect_published_pack_rules();
+
+-- ============================================
+-- 5. PERBAIKAN #1: DEFERRED CONSTRAINT TRIGGER untuk snapshot validation
+-- PostgreSQL CHECK tidak boleh subquery, gunakan deferred constraint trigger
+-- ============================================
+
+CREATE OR REPLACE FUNCTION validate_snapshot_for_published_pack()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_pack_status VARCHAR(20);
+BEGIN
+  -- Ambil status policy pack
+  SELECT status INTO v_pack_status FROM policy_packs WHERE id = NEW.policy_pack_id;
+
+  -- Jika pack PUBLISHED, snapshot wajib ada
+  IF v_pack_status = 'PUBLISHED' THEN
+    IF NEW.snapshot IS NULL OR NEW.snapshot_taken_at IS NULL THEN
+      RAISE EXCEPTION 'Snapshot is required for rules in published policy pack';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Deferred constraint trigger: dijalankan pada COMMIT, bukan per-statement
+CREATE CONSTRAINT TRIGGER validate_snapshot_constraint
+AFTER INSERT OR UPDATE ON policy_pack_rules
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_snapshot_for_published_pack();
+
+-- ============================================
+-- 6. FUNGSI UNTUK SET SESSION VARIABLES
+-- ============================================
+
+CREATE OR REPLACE FUNCTION set_audit_context(
+  p_actor_id UUID,
+  p_actor_type VARCHAR(20),
+  p_actor_role VARCHAR(50),
+  p_reason TEXT
+) RETURNS VOID AS $$
+BEGIN
+  PERFORM set_config('app.actor_id', COALESCE(p_actor_id::TEXT, ''), true);
+  PERFORM set_config('app.actor_type', COALESCE(p_actor_type, 'SYSTEM'), true);
+  PERFORM set_config('app.actor_role', COALESCE(p_actor_role, 'SYSTEM'), true);
+  PERFORM set_config('app.action_reason', COALESCE(p_reason, ''), true);
+END;
+$$ LANGUAGE plpgsql;
+```
+
+---
+
+### 2. PERBAIKAN EVALUATOR AST
+
+#### `src/rules/ast/errors.ts` (BARU)
+
+```typescript
+// PERBAIKAN #4: Custom error untuk referensi yang hilang
+export class MissingReferenceError extends Error {
+  constructor(public path: string) {
+    super(`Reference '${path}' not found in context`);
+    this.name = 'MissingReferenceError';
+  }
+}
+
+export class InvalidOperatorError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidOperatorError';
+  }
+}
+
+export class TypeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TypeError';
+  }
+}
+```
+
+#### `src/rules/ast/evaluator.ts` (Revisi Lengkap)
+
+```typescript
+import { AstNode, EvaluationContext, EvaluationResult } from './types';
+import { MissingReferenceError, InvalidOperatorError, TypeError } from './errors';
+
+export function evaluateAst(
+  ast: AstNode,
+  context: EvaluationContext,
+  allowedReferences?: string[]
+): EvaluationResult {
+  // PERBAIKAN #5: Closure internal yang berbagi referencedPaths
+  const referencedPaths = new Set<string>();
+
+  function evaluate(node: AstNode): number | string | boolean | null {
+    if (node.type === 'literal') {
+      return node.value;
+    }
+
+    if (node.type === 'reference') {
+      if (allowedReferences && !allowedReferences.includes(node.path)) {
+        throw new InvalidOperatorError(`Reference '${node.path}' is not allowed`);
+      }
+      referencedPaths.add(node.path);
+      const value = context[node.path];
+      if (value === undefined) {
+        throw new MissingReferenceError(node.path);
+      }
+      return value;
+    }
+
+    if (node.type === 'operator') {
+      return evaluateOperator(node.operator, node.operands);
+    }
+
+    if (node.type === 'conditional') {
+      const condition = evaluate(node.condition);
+      if (typeof condition !== 'boolean') {
+        throw new TypeError('Conditional condition must evaluate to boolean');
+      }
+      // Lazy evaluation: hanya evaluasi branch yang dipilih
+      return condition ? evaluate(node.then) : evaluate(node.else);
+    }
+
+    throw new InvalidOperatorError('Invalid AST node');
+  }
+
+  function evaluateOperator(operator: string, operands: AstNode[]): number | string | boolean | null {
+    switch (operator) {
+      // PERBAIKAN #4: coalesce hanya tangani MissingReferenceError
+      case 'coalesce':
+        for (const operand of operands) {
+          try {
+            const value = evaluate(operand);
+            if (value !== null && value !== undefined) {
+              return value;
+            }
+          } catch (e) {
+            // Hanya lanjutkan jika error adalah MissingReferenceError
+            if (!(e instanceof MissingReferenceError)) {
+              throw e; // Re-throw error lain (division by zero, type error, dll)
+            }
+          }
+        }
+        return null;
+
+      // PERBAIKAN #5: and/or menggunakan closure internal yang sama
+      case 'and':
+        for (const operand of operands) {
+          const value = evaluate(operand);
+          if (typeof value !== 'boolean') {
+            throw new TypeError('AND operator requires boolean operands');
+          }
+          if (!value) return false; // Short-circuit
+        }
+        return true;
+
+      case 'or':
+        for (const operand of operands) {
+          const value = evaluate(operand);
+          if (typeof value !== 'boolean') {
+            throw new TypeError('OR operator requires boolean operands');
+          }
+          if (value) return true; // Short-circuit
+        }
+        return false;
+
+      case 'not':
+        if (operands.length !== 1) {
+          throw new InvalidOperatorError('not requires exactly 1 operand');
+        }
+        const notValue = evaluate(operands[0]);
+        if (typeof notValue !== 'boolean') {
+          throw new TypeError('not requires boolean operand');
+        }
+        return !notValue;
+
+      // Aritmatika
+      case 'add':
+      case 'subtract':
+      case 'multiply':
+      case 'divide':
+        if (operands.length !== 2) {
+          throw new InvalidOperatorError(`${operator} requires exactly 2 operands`);
+        }
+        const [left, right] = operands.map(op => evaluate(op));
+        if (typeof left !== 'number' || typeof right !== 'number') {
+          throw new TypeError(`${operator} requires numeric operands`);
+        }
+        if (operator === 'add') return left + right;
+        if (operator === 'subtract') return left - right;
+        if (operator === 'multiply') return left * right;
+        if (operator === 'divide') {
+          if (right === 0) throw new InvalidOperatorError('Division by zero');
+          return left / right;
+        }
+        break;
+
+      // Agregasi
+      case 'min':
+      case 'max':
+        if (operands.length < 1) {
+          throw new InvalidOperatorError(`${operator} requires at least 1 operand`);
+        }
+        const aggValues = operands.map(op => evaluate(op));
+        if (!aggValues.every(v => typeof v === 'number')) {
+          throw new TypeError(`${operator} requires numeric operands`);
+        }
+        return operator === 'min' ? Math.min(...aggValues as number[]) : Math.max(...aggValues as number[]);
+
+      // Numerik
+      case 'round':
+      case 'floor':
+      case 'ceil':
+      case 'abs':
+        if (operands.length !== 1) {
+          throw new InvalidOperatorError(`${operator} requires exactly 1 operand`);
+        }
+        const numValue = evaluate(operands[0]);
+        if (typeof numValue !== 'number') {
+          throw new TypeError(`${operator} requires numeric operand`);
+        }
+        if (operator === 'round') return Math.round(numValue);
+        if (operator === 'floor') return Math.floor(numValue);
+        if (operator === 'ceil') return Math.ceil(numValue);
+        if (operator === 'abs') return Math.abs(numValue);
+        break;
+
+      case 'clamp':
+        if (operands.length !== 3) {
+          throw new InvalidOperatorError('clamp requires exactly 3 operands');
+        }
+        const clampValues = operands.map(op => evaluate(op));
+        if (!clampValues.every(v => typeof v === 'number')) {
+          throw new TypeError('clamp requires numeric operands');
+        }
+        return Math.min(Math.max(clampValues[0] as number, clampValues[1] as number), clampValues[2] as number);
+
+      // Perbandingan
+      case 'eq':
+      case 'neq':
+        if (operands.length !== 2) {
+          throw new InvalidOperatorError(`${operator} requires exactly 2 operands`);
+        }
+        const [eqLeft, eqRight] = operands.map(op => evaluate(op));
+        return operator === 'eq' ? eqLeft === eqRight : eqLeft !== eqRight;
+
+      case 'gt':
+      case 'gte':
+      case 'lt':
+      case 'lte':
+        if (operands.length !== 2) {
+          throw new InvalidOperatorError(`${operator} requires exactly 2 operands`);
+        }
+        const [cmpLeft, cmpRight] = operands.map(op => evaluate(op));
+        if (typeof cmpLeft !== 'number' || typeof cmpRight !== 'number') {
+          throw new TypeError(`${operator} requires numeric operands`);
+        }
+        if (operator === 'gt') return cmpLeft > cmpRight;
+        if (operator === 'gte') return cmpLeft >= cmpRight;
+        if (operator === 'lt') return cmpLeft < cmpRight;
+        if (operator === 'lte') return cmpLeft <= cmpRight;
+        break;
+
+      default:
+        throw new InvalidOperatorError(`Unknown operator: ${operator}`);
+    }
+
+    throw new InvalidOperatorError(`Unhandled operator: ${operator}`);
+  }
+
+  const result = evaluate(ast);
+
+  return {
+    value: result,
+    referencedPaths: Array.from(referencedPaths),
+    sourceVerificationStatus: 'VERIFIED' // Akan di-set oleh evaluator level tinggi
+  };
+}
+```
+
+---
+
+### 3. PERBAIKAN SEED (PERBAIKAN #7)
+
+#### `src/db/seed/initial-regulations.ts` (Revisi)
+
+```typescript
+import { db } from '@/db';
+import { legalSources } from '@/db/schema';
+
+export async function seedInitialRegulations() {
+  // PERBAIKAN #7: Title tetap NOT NULL, tapi tandai sebagai UNVERIFIED dengan prefix eksplisit
+  // Atau gunakan judul yang benar-benar terverifikasi dari naskah resmi
+
+  await db.insert(legalSources).values([
+    {
+      regulationCode: 'PERPRES-46-2025',
+      regulationType: 'PERPRES',
+      number: '46',
+      year: 2025,
+      // PERBAIKAN #7: Tandai eksplisit sebagai belum diverifikasi
+      title: '[UNVERIFIED] Peraturan Presiden tentang Pengadaan Barang/Jasa Pemerintah',
+      issuingAuthority: 'Presiden Republik Indonesia',
+      authorityLevel: 1,
+      effectiveDate: null, // Nullable selama UNVERIFIED
+      isBinding: true,
+      status: 'ACTIVE',
+      verificationStatus: 'UNVERIFIED',
+    },
+    {
+      regulationCode: 'PERMENPERIN-35-2025',
+      regulationType: 'PERMEN',
+      number: '35',
+      year: 2025,
+      title: '[UNVERIFIED] Peraturan Menteri Perindustrian tentang Pedoman Perhitungan dan Sertifikasi TKDN',
+      issuingAuthority: 'Kementerian Perindustrian',
+      authorityLevel: 2,
+      effectiveDate: null,
+      isBinding: true,
+      status: 'ACTIVE',
+      verificationStatus: 'UNVERIFIED',
+    }
+  ]);
+
+  console.log('Seed completed. All sources marked as [UNVERIFIED].');
+  console.log('Titles must be updated with official text after verification.');
+}
+```
+
+---
+
+## 🧪 TEST CASES KOMPREHENSIF
+
+### File: `src/db/tests/constraint-and-trigger-tests.sql`
+
+```sql
+-- ============================================
+-- TEST SUITE: Constraint dan Trigger Validation
+-- Jalankan secara berurutan, setiap test harus PASS atau FAIL sesuai ekspektasi
+-- ============================================
+
+-- Setup: Bersihkan data sebelumnya
+BEGIN;
+
+-- Test 1: Audit log immutable
+-- ============================================
+DO $$
+DECLARE
+  v_log_id BIGINT;
+BEGIN
+  -- Insert audit log manual
+  INSERT INTO audit_logs (actor_type, actor_role, action_type, entity_type, entity_id, new_state)
+  VALUES ('SYSTEM', 'TEST', 'CREATE', 'test', 'test-id', '{}'::jsonb)
+  RETURNING id INTO v_log_id;
+
+  -- Test 1a: UPDATE harus ditolak
+  BEGIN
+    UPDATE audit_logs SET actor_role = 'HACKED' WHERE id = v_log_id;
+    RAISE EXCEPTION 'TEST 1a FAILED: UPDATE audit log should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      RAISE NOTICE 'TEST 1a PASSED: UPDATE audit log rejected with: %', SQLERRM;
+  END;
+
+  -- Test 1b: DELETE harus ditolak
+  BEGIN
+    DELETE FROM audit_logs WHERE id = v_log_id;
+    RAISE EXCEPTION 'TEST 1b FAILED: DELETE audit log should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      RAISE NOTICE 'TEST 1b PASSED: DELETE audit log rejected with: %', SQLERRM;
+  END;
+END $$;
+
+-- Test 2: Audit log wajib reason untuk UPDATE/DELETE
+-- ============================================
+DO $$
+DECLARE
+  v_source_id UUID;
+BEGIN
+  -- Set context TANPA reason
+  PERFORM set_config('app.actor_id', gen_random_uuid()::TEXT, true);
+  PERFORM set_config('app.actor_type', 'USER', true);
+  PERFORM set_config('app.actor_role', 'ADMIN', true);
+  PERFORM set_config('app.action_reason', '', true);
+
+  -- Insert legal source (boleh tanpa reason)
+  INSERT INTO legal_sources (regulation_code, regulation_type, number, year, title, issuing_authority, authority_level, is_binding, status, verification_status)
+  VALUES ('TEST-001', 'PERPRES', '1', 2025, 'Test Regulation', 'Test Authority', 1, true, 'ACTIVE', 'UNVERIFIED')
+  RETURNING id INTO v_source_id;
+
+  -- Test 2a: UPDATE tanpa reason harus ditolak
+  BEGIN
+    UPDATE legal_sources SET title = 'Updated Title' WHERE id = v_source_id;
+    RAISE EXCEPTION 'TEST 2a FAILED: UPDATE without reason should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE '%Reason is required%' THEN
+        RAISE NOTICE 'TEST 2a PASSED: UPDATE without reason rejected';
+      ELSE
+        RAISE EXCEPTION 'TEST 2a FAILED: Wrong error: %', SQLERRM;
+      END IF;
+  END;
+
+  -- Test 2b: UPDATE dengan reason harus berhasil
+  PERFORM set_config('app.action_reason', 'Testing update with reason', true);
+  UPDATE legal_sources SET title = 'Updated Title' WHERE id = v_source_id;
+  RAISE NOTICE 'TEST 2b PASSED: UPDATE with reason succeeded';
+
+  -- Cleanup
+  DELETE FROM legal_sources WHERE id = v_source_id;
+END $$;
+
+-- Test 3: Published policy pack protection
+-- ============================================
+DO $$
+DECLARE
+  v_pack_id UUID;
+  v_rule_id UUID;
+  v_provision_id UUID;
+  v_source_id UUID;
+BEGIN
+  -- Setup: Buat legal source, provision, business rule, policy pack
+  INSERT INTO legal_sources (regulation_code, regulation_type, number, year, title, issuing_authority, authority_level, is_binding, status, verification_status)
+  VALUES ('TEST-002', 'PERPRES', '2', 2025, 'Test', 'Test', 1, true, 'ACTIVE', 'VERIFIED')
+  RETURNING id INTO v_source_id;
+
+  INSERT INTO provisions (legal_source_id, article_number, provision_type, raw_text, source_category)
+  VALUES (v_source_id, '1', 'THRESHOLD', 'Test provision', 'REGULATION')
+  RETURNING id INTO v_provision_id;
+
+  INSERT INTO business_rules (provision_id, rule_key, rule_category, default_value, value_type, version)
+  VALUES (v_provision_id, 'test_rule', 'THRESHOLD', '100'::jsonb, 'INTEGER', 1)
+  RETURNING id INTO v_rule_id;
+
+  INSERT INTO policy_packs (pack_name, regime_type, version, status)
+  VALUES ('Test Pack', 'GOVERNMENT_CENTRAL', '1.0.0', 'PUBLISHED')
+  RETURNING id INTO v_pack_id;
+
+  -- Test 3a: Update pack_name harus ditolak
+  BEGIN
+    UPDATE policy_packs SET pack_name = 'Hacked Name' WHERE id = v_pack_id;
+    RAISE EXCEPTION 'TEST 3a FAILED: Update pack_name should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE '%Cannot modify content%' THEN
+        RAISE NOTICE 'TEST 3a PASSED: Update pack_name rejected';
+      ELSE
+        RAISE EXCEPTION 'TEST 3a FAILED: Wrong error: %', SQLERRM;
+      END IF;
+  END;
+
+  -- Test 3b: Transisi ke RETIRED harus berhasil
+  UPDATE policy_packs SET status = 'RETIRED' WHERE id = v_pack_id;
+  RAISE NOTICE 'TEST 3b PASSED: Transition to RETIRED succeeded';
+
+  -- Test 3c: Transisi ke DRAFT harus ditolak
+  BEGIN
+    UPDATE policy_packs SET status = 'DRAFT' WHERE id = v_pack_id;
+    RAISE EXCEPTION 'TEST 3c FAILED: Transition to DRAFT should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE '%can only transition to RETIRED%' THEN
+        RAISE NOTICE 'TEST 3c PASSED: Transition to DRAFT rejected';
+      ELSE
+        RAISE EXCEPTION 'TEST 3c FAILED: Wrong error: %', SQLERRM;
+      END IF;
+  END;
+
+  -- Cleanup
+  DELETE FROM policy_packs WHERE id = v_pack_id;
+  DELETE FROM business_rules WHERE id = v_rule_id;
+  DELETE FROM provisions WHERE id = v_provision_id;
+  DELETE FROM legal_sources WHERE id = v_source_id;
+END $$;
+
+-- Test 4: Published pack rules protection
+-- ============================================
+DO $$
+DECLARE
+  v_pack_id UUID;
+  v_rule_id UUID;
+  v_provision_id UUID;
+  v_source_id UUID;
+  v_pack_rule_id UUID;
+BEGIN
+  -- Setup
+  INSERT INTO legal_sources (regulation_code, regulation_type, number, year, title, issuing_authority, authority_level, is_binding, status, verification_status)
+  VALUES ('TEST-003', 'PERPRES', '3', 2025, 'Test', 'Test', 1, true, 'ACTIVE', 'VERIFIED')
+  RETURNING id INTO v_source_id;
+
+  INSERT INTO provisions (legal_source_id, article_number, provision_type, raw_text, source_category)
+  VALUES (v_source_id, '1', 'THRESHOLD', 'Test', 'REGULATION')
+  RETURNING id INTO v_provision_id;
+
+  INSERT INTO business_rules (provision_id, rule_key, rule_category, default_value, value_type, version)
+  VALUES (v_provision_id, 'test_rule_2', 'THRESHOLD', '100'::jsonb, 'INTEGER', 1)
+  RETURNING id INTO v_rule_id;
+
+  INSERT INTO policy_packs (pack_name, regime_type, version, status)
+  VALUES ('Test Pack 2', 'GOVERNMENT_CENTRAL', '1.0.0', 'PUBLISHED')
+  RETURNING id INTO v_pack_id;
+
+  -- Test 4a: INSERT rule ke published pack harus ditolak
+  BEGIN
+    INSERT INTO policy_pack_rules (policy_pack_id, business_rule_id, is_mandatory)
+    VALUES (v_pack_id, v_rule_id, true)
+    RETURNING id INTO v_pack_rule_id;
+    RAISE EXCEPTION 'TEST 4a FAILED: INSERT rule to published pack should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE '%Cannot modify rules of published%' THEN
+        RAISE NOTICE 'TEST 4a PASSED: INSERT rule rejected';
+      ELSE
+        RAISE EXCEPTION 'TEST 4a FAILED: Wrong error: %', SQLERRM;
+      END IF;
+  END;
+
+  -- Cleanup
+  DELETE FROM policy_packs WHERE id = v_pack_id;
+  DELETE FROM business_rules WHERE id = v_rule_id;
+  DELETE FROM provisions WHERE id = v_provision_id;
+  DELETE FROM legal_sources WHERE id = v_source_id;
+END $$;
+
+-- Test 5: Snapshot validation (deferred constraint)
+-- ============================================
+DO $$
+DECLARE
+  v_pack_id UUID;
+  v_rule_id UUID;
+  v_provision_id UUID;
+  v_source_id UUID;
+  v_pack_rule_id UUID;
+BEGIN
+  -- Setup
+  INSERT INTO legal_sources (regulation_code, regulation_type, number, year, title, issuing_authority, authority_level, is_binding, status, verification_status)
+  VALUES ('TEST-004', 'PERPRES', '4', 2025, 'Test', 'Test', 1, true, 'ACTIVE', 'VERIFIED')
+  RETURNING id INTO v_source_id;
+
+  INSERT INTO provisions (legal_source_id, article_number, provision_type, raw_text, source_category)
+  VALUES (v_source_id, '1', 'THRESHOLD', 'Test', 'REGULATION')
+  RETURNING id INTO v_provision_id;
+
+  INSERT INTO business_rules (provision_id, rule_key, rule_category, default_value, value_type, version)
+  VALUES (v_provision_id, 'test_rule_3', 'THRESHOLD', '100'::jsonb, 'INTEGER', 1)
+  RETURNING id INTO v_rule_id;
+
+  -- Buat pack DRAFT
+  INSERT INTO policy_packs (pack_name, regime_type, version, status)
+  VALUES ('Test Pack 3', 'GOVERNMENT_CENTRAL', '1.0.0', 'DRAFT')
+  RETURNING id INTO v_pack_id;
+
+  -- Insert rule tanpa snapshot (boleh untuk DRAFT)
+  INSERT INTO policy_pack_rules (policy_pack_id, business_rule_id, is_mandatory)
+  VALUES (v_pack_id, v_rule_id, true)
+  RETURNING id INTO v_pack_rule_id;
+  RAISE NOTICE 'TEST 5a PASSED: Insert rule without snapshot to DRAFT pack succeeded';
+
+  -- Publish pack (harus gagal karena snapshot NULL)
+  BEGIN
+    UPDATE policy_packs SET status = 'PUBLISHED' WHERE id = v_pack_id;
+    COMMIT; -- Trigger deferred dijalankan di sini
+    RAISE EXCEPTION 'TEST 5b FAILED: Publish pack without snapshot should be rejected';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF SQLERRM LIKE '%Snapshot is required%' THEN
+        RAISE NOTICE 'TEST 5b PASSED: Publish pack without snapshot rejected';
+      ELSE
+        RAISE EXCEPTION 'TEST 5b FAILED: Wrong error: %', SQLERRM;
+      END IF;
+  END;
+
+  -- Cleanup
+  ROLLBACK;
+END $$;
+
+-- Test 6: Audit trail completeness
+-- ============================================
+DO $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  -- Cek apakah semua tabel kritis memiliki audit log
+  SELECT COUNT(*) INTO v_count FROM audit_logs WHERE entity_type = 'legal_sources';
+  RAISE NOTICE 'TEST 6: Found % audit logs for legal_sources', v_count;
+
+  SELECT COUNT(*) INTO v_count FROM audit_logs WHERE entity_type = 'provisions';
+  RAISE NOTICE 'TEST 6: Found % audit logs for provisions', v_count;
+
+  SELECT COUNT(*) INTO v_count FROM audit_logs WHERE entity_type = 'business_rules';
+  RAISE NOTICE 'TEST 6: Found % audit logs for business_rules', v_count;
+
+  SELECT COUNT(*) INTO v_count FROM audit_logs WHERE entity_type = 'policy_packs';
+  RAISE NOTICE 'TEST 6: Found % audit logs for policy_packs', v_count;
+END $$;
+
+COMMIT;
+```
+
+---
+
+### File: `src/rules/ast/tests/evaluator-tests.ts`
+
+```typescript
+import { evaluateAst } from '../evaluator';
+import { MissingReferenceError, InvalidOperatorError, TypeError } from '../errors';
+import { AstNode, EvaluationContext } from '../types';
+
+// Test Suite: Evaluator AST
+console.log('=== EVALUATOR AST TEST SUITE ===\n');
+
+// Test 1: Basic arithmetic
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'add',
+    operands: [
+      { type: 'literal', value: 10 },
+      { type: 'literal', value: 20 }
+    ]
+  };
+  const result = evaluateAst(ast, {});
+  console.assert(result.value === 30, 'Test 1 FAILED: 10 + 20 should be 30');
+  console.log('✓ Test 1 PASSED: Basic arithmetic');
+}
+
+// Test 2: Reference tracking
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'multiply',
+    operands: [
+      { type: 'reference', path: 'price' },
+      { type: 'reference', path: 'quantity' }
+    ]
+  };
+  const context: EvaluationContext = { price: 100, quantity: 5 };
+  const result = evaluateAst(ast, context);
+  console.assert(result.value === 500, 'Test 2 FAILED: 100 * 5 should be 500');
+  console.assert(result.referencedPaths.length === 2, 'Test 2 FAILED: Should track 2 references');
+  console.assert(result.referencedPaths.includes('price'), 'Test 2 FAILED: Should track price');
+  console.assert(result.referencedPaths.includes('quantity'), 'Test 2 FAILED: Should track quantity');
+  console.log('✓ Test 2 PASSED: Reference tracking');
+}
+
+// Test 3: coalesce dengan missing reference
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'coalesce',
+    operands: [
+      { type: 'reference', path: 'missing1' },
+      { type: 'reference', path: 'missing2' },
+      { type: 'literal', value: 42 }
+    ]
+  };
+  const result = evaluateAst(ast, {});
+  console.assert(result.value === 42, 'Test 3 FAILED: coalesce should return 42');
+  console.log('✓ Test 3 PASSED: coalesce with missing references');
+}
+
+// Test 4: coalesce TIDAK menangkap division by zero
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'coalesce',
+    operands: [
+      {
+        type: 'operator',
+        operator: 'divide',
+        operands: [
+          { type: 'literal', value: 10 },
+          { type: 'literal', value: 0 }
+        ]
+      },
+      { type: 'literal', value: 99 }
+    ]
+  };
+  try {
+    evaluateAst(ast, {});
+    console.error('✗ Test 4 FAILED: coalesce should NOT catch division by zero');
+  } catch (e) {
+    if (e instanceof InvalidOperatorError && e.message.includes('Division by zero')) {
+      console.log('✓ Test 4 PASSED: coalesce does not catch division by zero');
+    } else {
+      console.error('✗ Test 4 FAILED: Wrong error:', e);
+    }
+  }
+}
+
+// Test 5: AND short-circuit
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'and',
+    operands: [
+      { type: 'literal', value: false },
+      { type: 'reference', path: 'missing' } // Tidak boleh dievaluasi
+    ]
+  };
+  const result = evaluateAst(ast, {});
+  console.assert(result.value === false, 'Test 5 FAILED: AND should short-circuit');
+  console.assert(!result.referencedPaths.includes('missing'), 'Test 5 FAILED: Should not track missing reference');
+  console.log('✓ Test 5 PASSED: AND short-circuit evaluation');
+}
+
+// Test 6: OR short-circuit
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'or',
+    operands: [
+      { type: 'literal', value: true },
+      { type: 'reference', path: 'missing' } // Tidak boleh dievaluasi
+    ]
+  };
+  const result = evaluateAst(ast, {});
+  console.assert(result.value === true, 'Test 6 FAILED: OR should short-circuit');
+  console.assert(!result.referencedPaths.includes('missing'), 'Test 6 FAILED: Should not track missing reference');
+  console.log('✓ Test 6 PASSED: OR short-circuit evaluation');
+}
+
+// Test 7: Conditional lazy evaluation
+{
+  const ast: AstNode = {
+    type: 'conditional',
+    condition: { type: 'literal', value: true },
+    then: { type: 'literal', value: 100 },
+    else: { type: 'reference', path: 'missing' } // Tidak boleh dievaluasi
+  };
+  const result = evaluateAst(ast, {});
+  console.assert(result.value === 100, 'Test 7 FAILED: Conditional should evaluate then branch');
+  console.assert(!result.referencedPaths.includes('missing'), 'Test 7 FAILED: Should not track missing reference');
+  console.log('✓ Test 7 PASSED: Conditional lazy evaluation');
+}
+
+// Test 8: Type validation
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'add',
+    operands: [
+      { type: 'literal', value: 10 },
+      { type: 'literal', value: 'string' }
+    ]
+  };
+  try {
+    evaluateAst(ast, {});
+    console.error('✗ Test 8 FAILED: Should reject type mismatch');
+  } catch (e) {
+    if (e instanceof TypeError) {
+      console.log('✓ Test 8 PASSED: Type validation');
+    } else {
+      console.error('✗ Test 8 FAILED: Wrong error:', e);
+    }
+  }
+}
+
+// Test 9: Arity validation
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'add',
+    operands: [
+      { type: 'literal', value: 10 }
+    ]
+  };
+  try {
+    evaluateAst(ast, {});
+    console.error('✗ Test 9 FAILED: Should reject wrong arity');
+  } catch (e) {
+    if (e instanceof InvalidOperatorError && e.message.includes('exactly 2 operands')) {
+      console.log('✓ Test 9 PASSED: Arity validation');
+    } else {
+      console.error('✗ Test 9 FAILED: Wrong error:', e);
+    }
+  }
+}
+
+// Test 10: Unified reference tracking dengan closure
+{
+  const ast: AstNode = {
+    type: 'operator',
+    operator: 'add',
+    operands: [
+      { type: 'reference', path: 'a' },
+      {
+        type: 'operator',
+        operator: 'multiply',
+        operands: [
+          { type: 'reference', path: 'b' },
+          { type: 'reference', path: 'c' }
+        ]
+      }
+    ]
+  };
+  const context: EvaluationContext = { a: 1, b: 2, c: 3 };
+  const result = evaluateAst(ast, context);
+  console.assert(result.value === 7, 'Test 10 FAILED: 1 + (2 * 3) should be 7');
+  console.assert(result.referencedPaths.length === 3, 'Test 10 FAILED: Should track 3 references');
+  console.assert(result.referencedPaths.includes('a'), 'Test 10 FAILED: Should track a');
+  console.assert(result.referencedPaths.includes('b'), 'Test 10 FAILED: Should track b');
+  console.assert(result.referencedPaths.includes('c'), 'Test 10 FAILED: Should track c');
+  console.log('✓ Test 10 PASSED: Unified reference tracking with closure');
+}
+
+console.log('\n=== ALL TESTS COMPLETED ===');
+```
+
+---
+
+## 📋 CHECKLIST EKSEKUSI
+
+### Langkah 1: Jalankan Migrasi
+```bash
+# Generate migrasi dari Drizzle
+npx drizzle-kit generate:pg
+
+# Jalankan migrasi
+npx drizzle-kit push:pg
+
+# Jalankan SQL manual untuk trigger dan constraint
+psql -U your_user -d your_db -f src/db/migrations/0002_audit_triggers_and_constraints.sql
+```
+
+### Langkah 2: Jalankan Test Database
+```bash
+psql -U your_user -d your_db -f src/db/tests/constraint-and-trigger-tests.sql
+```
+
+**Ekspektasi hasil:**
+- Test 1a, 1b: PASSED (audit log immutable)
+- Test 2a: PASSED (UPDATE tanpa reason ditolak)
+- Test 2b: PASSED (UPDATE dengan reason berhasil)
+- Test 3a: PASSED (update pack_name ditolak)
+- Test 3b: PASSED (transisi ke RETIRED berhasil)
+- Test 3c: PASSED (transisi ke DRAFT ditolak)
+- Test 4a: PASSED (INSERT rule ke published pack ditolak)
+- Test 5a: PASSED (insert rule tanpa snapshot ke DRAFT berhasil)
+- Test 5b: PASSED (publish pack tanpa snapshot ditolak)
+- Test 6: Menampilkan jumlah audit log untuk setiap tabel
+
+### Langkah 3: Jalankan Test Evaluator
+```bash
+npx tsx src/rules/ast/tests/evaluator-tests.ts
+```
+
+**Ekspektasi hasil:**
+- Semua 10 test PASSED
+
+### Langkah 4: Verifikasi Manual
+```sql
+-- Cek apakah audit log terisi dengan benar
+SELECT entity_type, action_type, COUNT(*) 
+FROM audit_logs 
+GROUP BY entity_type, action_type
+ORDER BY entity_type, action_type;
+
+-- Cek apakah reason tercatat
+SELECT entity_type, action_type, reason 
+FROM audit_logs 
+WHERE action_type IN ('UPDATE', 'DELETE')
+LIMIT 10;
+```
+
+---
+
+## 🎯 KESIMPULAN
+
+Semua 7 masalah telah diperbaiki:
+
+✅ **Constraint snapshot**: Menggunakan deferred constraint trigger, bukan CHECK subquery  
+✅ **Proteksi pack**: Hanya izinkan PUBLISHED → RETIRED tanpa perubahan field lain  
+✅ **Proteksi pack rules**: Trigger untuk INSERT/UPDATE/DELETE pada policy_pack_rules  
+✅ **coalesce**: Hanya tangani MissingReferenceError, bukan semua error  
+✅ **Evaluator closure**: Semua evaluasi melalui closure internal yang berbagi referencedPaths  
+✅ **Audit lengkap**: Trigger untuk provisions, rule_conditions, rule_overrides, policy_pack_rules, decision_references  
+✅ **Judul resmi**: Tandai eksplisit dengan prefix `[UNVERIFIED]`  
+
+**Setelah semua test PASS**, baru lanjut ke endpoint evaluasi aturan.
+
+Apakah Anda ingin saya menunggu hasil eksekusi test dari Anda, atau ada aspek lain yang perlu disesuaikan sebelum Anda menjalankan test?

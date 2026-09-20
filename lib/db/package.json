@@ -9,7 +9,9 @@
   },
   "scripts": {
     "push": "drizzle-kit push --config ./drizzle.config.ts",
-    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
+    "test:ast": "pnpm --filter scripts exec tsx ../lib/db/src/tests/ast-evaluator.test.ts",
+    "test:dre-db": "pnpm --filter scripts exec tsx ../lib/db/src/tests/dre-database.test.ts"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",

@@ -25,6 +25,9 @@ Platform pendamping kepatuhan pengadaan untuk Pemerintah dan kebijakan internal 
 
 - API contract: `lib/api-spec/openapi.yaml`
 - Procurement database schema: `lib/db/src/schema/procurement.ts`
+- Dynamic Rule Engine schema: `lib/db/src/schema/legal-sources.ts`, `business-rules.ts`, `policy-packs.ts`, `decisions.ts`, and `audit.ts`
+- Rule formula evaluator and validation: `lib/db/src/rules/ast`
+- PostgreSQL DRE guards and conservative seed: `lib/db/sql`
 - API routes: `artifacts/api-server/src/routes/procurement.ts`
 - Web app: `artifacts/procurement-compliance/src`
 - Theme tokens: `artifacts/procurement-compliance/src/index.css`
@@ -35,6 +38,8 @@ Platform pendamping kepatuhan pengadaan untuk Pemerintah dan kebijakan internal 
 - BUMN/BUMD support is modeled as configurable internal policy packs, not as an automatic claim that every process is directly governed by the same Perpres.
 - The product is a preparation, compliance, and audit companion; it does not replace SPSE.
 - API contracts are defined OpenAPI-first and consumed through generated hooks and Zod schemas.
+- Published policy packs use immutable copy-on-publish snapshots; decision references and audit logs are append-only evidence.
+- Binding rules from unverified legal sources cannot be published.
 
 ## Product
 
@@ -52,6 +57,7 @@ Platform pendamping kepatuhan pengadaan untuk Pemerintah dan kebijakan internal 
 
 - Run API codegen after every OpenAPI change.
 - Rebuild shared TypeScript libraries after changing the database schema before checking API server types.
+- Run `pnpm --filter @workspace/db run test:ast` and `pnpm --filter @workspace/db run test:dre-db` after changing formula evaluation, audit triggers, or policy-pack constraints.
 
 ## Pointers
 

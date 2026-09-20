@@ -1,0 +1,213 @@
+Koreksi Anda **sangat tepat dan fundamental**. Saya mengakui bahwa saran sebelumnya tentang `BEGIN`/`ROLLBACK` melalui `db.execute()` **tidak akan bekerja** karena masalah connection pooling.
+
+---
+
+## 🔍 ANALISIS MASALAH
+
+### Mengapa `db.execute(sql\`BEGIN\`)` Tidak Bekerja
+
+```typescript
+// ❌ SALAH: Ini tidak bekerja seperti yang diharapkan
+await db.execute(sql`BEGIN`);
+await db.insert(legalSources).values({...}); // Bisa pakai koneksi berbeda!
+await db.execute(sql`ROLLBACK`); // ROLLBACK koneksi yang berbeda!
+```
+
+**Masalahnya:**
+- `db` adalah Drizzle ORM instance yang menggunakan **connection pool**
+- Setiap `db.execute()` bisa mengambil koneksi berbeda dari pool
+- `BEGIN` di koneksi A, `INSERT` di koneksi B, `ROLLBACK` di koneksi C
+- Transaksi tidak bekerja lintas koneksi
+
+### Mengapa Supertest Juga Bermasalah
+
+```typescript
+// ❌ SALAH: Request HTTP tidak masuk ke transaksi test
+await db.execute(sql`BEGIN`);
+const res = await request(app).post('/api/rules/evaluate').send({...});
+// Request ini pakai koneksi dari pool yang berbeda, tidak dalam transaksi!
+await db.execute(sql`ROLLBACK`);
+```
+
+**Masalahnya:**
+- API server menggunakan connection pool sendiri
+- Request HTTP di-handle oleh koneksi yang berbeda dari test
+- Transaksi test tidak mencakup operasi database dari API server
+
+---
+
+## ✅ SOLUSI YANG BENAR
+
+### Pendekatan 1: Pinjam Client + Dependency Injection
+
+```typescript
+import { Pool, PoolClient } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+
+describe('Policy Engine Tests', () => {
+  let pool: Pool;
+  let client: PoolClient;
+  let testDb: any; // Drizzle instance dengan client tunggal
+
+  beforeAll(() => {
+    pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  });
+
+  beforeEach(async () => {
+    // Pinjam SATU koneksi dari pool
+    client = await pool.connect();
+    
+    // Mulai transaksi di koneksi ini
+    await client.query('BEGIN');
+    
+    // Buat Drizzle instance yang menggunakan koneksi ini
+    testDb = drizzle(client);
+    
+    // Inject ke API server
+    app.set('db', testDb);
+  });
+
+  afterEach(async () => {
+    // ROLLBACK di koneksi yang sama
+    await client.query('ROLLBACK');
+    
+    // Kembalikan koneksi ke pool
+    client.release();
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  it('should create decision reference', async () => {
+    // Gunakan testDb yang sudah di-inject
+    const [source] = await testDb.insert(legalSources).values({...}).returning();
+    
+    // Request HTTP sekarang menggunakan testDb yang sama
+    const res = await request(app)
+      .post('/api/rules/evaluate')
+      .set(testAuthHeader(MOCK_ADMIN_USER))
+      .send({...});
+    
+    expect(res.body.decisionReferenceId).toBeDefined();
+    
+    // afterEach akan ROLLBACK di koneksi yang sama
+  });
+});
+```
+
+**Keuntungan:**
+- Semua operasi (test + API server) menggunakan koneksi yang sama
+- Transaksi bekerja dengan benar
+- ROLLBACK membatalkan semua perubahan
+
+**Tantangan:**
+- Perlu mekanisme dependency injection di API server
+- API server harus bisa menerima `db` instance dari luar
+
+### Pendekatan 2: Test Service Layer Langsung (Tanpa HTTP)
+
+```typescript
+import { evaluateRule } from '../services/rule-evaluator';
+import { publishPolicyPack } from '../services/policy-publisher';
+
+describe('Policy Engine Unit Tests', () => {
+  let pool: Pool;
+  let client: PoolClient;
+  let testDb: any;
+
+  beforeEach(async () => {
+    pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+    client = await pool.connect();
+    await client.query('BEGIN');
+    testDb = drizzle(client);
+  });
+
+  afterEach(async () => {
+    await client.query('ROLLBACK');
+    client.release();
+    await pool.end();
+  });
+
+  it('should evaluate rule and create decision reference', async () => {
+    // Setup data
+    const [source] = await testDb.insert(legalSources).values({...}).returning();
+    const [provision] = await testDb.insert(provisions).values({...}).returning();
+    const [rule] = await testDb.insert(businessRules).values({...}).returning();
+    const [pack] = await testDb.insert(policyPacks).values({...}).returning();
+    
+    await testDb.insert(policyPackRules).values({...});
+    
+    // Publish pack (service call, bukan HTTP)
+    const publishResult = await publishPolicyPack(pack.id, MOCK_ADMIN_USER, testDb);
+    expect(publishResult.success).toBe(true);
+    
+    // Evaluate rule (service call, bukan HTTP)
+    const evalResult = await evaluateRule({
+      policyPackCode: 'TEST-PACK',
+      policyPackVersion: '1.0.0',
+      context: { package_value: 50000000 }
+    }, testDb);
+    
+    expect(evalResult.decisionReferenceId).toBeDefined();
+    
+    // ROLLBACK di afterEach
+  });
+});
+```
+
+**Keuntungan:**
+- Lebih cepat (tidak ada overhead HTTP)
+- Lebih mudah di-debug
+- Transaksi bekerja dengan sempurna
+- Tidak perlu dependency injection di API server
+
+**Kekurangan:**
+- Tidak menguji HTTP layer (middleware, routing, serialization)
+- Perlu test terpisah untuk HTTP integration
+
+### Pendekatan 3: Hybrid (Service Test + HTTP Test Terpisah)
+
+```typescript
+// Test 1: Service layer dengan transaksi
+describe('Rule Evaluator Service', () => {
+  // Gunakan pendekatan 2: test service langsung
+});
+
+// Test 2: HTTP integration tanpa transaksi
+describe('Rule Evaluator HTTP', () => {
+  // Gunakan cleanup manual (DELETE) untuk data non-immutable
+  // Untuk data immutable (decision_references), biarkan menumpuk
+  // atau gunakan database test terpisah yang di-reset sebelum suite
+});
+```
+
+---
+
+## 📋 REKOMENDASI FINAL
+
+Untuk Task #9, saya merekomendasikan **Pendekatan 2 (Test Service Layer Langsung)** karena:
+
+1. **Transaksi bekerja dengan benar**: Semua operasi dalam satu koneksi
+2. **Lebih cepat**: Tidak ada overhead HTTP
+3. **Lebih mudah di-maintain**: Tidak perlu dependency injection kompleks
+4. **Cukup untuk invariant testing**: Snapshot immutability, decision reference immutability, audit trail bisa diuji di service layer
+
+Untuk HTTP integration test (middleware, routing, error handling), bisa ditambahkan terpisah dengan pendekatan yang berbeda.
+
+---
+
+## ✅ STATUS
+
+Saya mencatat penegasan teknis Anda sebagai **constraint implementasi** untuk Task #9:
+
+| # | Constraint | Implikasi |
+|---|------------|-----------|
+| 1 | Transaksi hanya bekerja di koneksi yang sama | Test harus pinjam client + dependency injection, atau test service langsung |
+| 2 | Pool connection tidak cocok untuk testing transaksi | Jangan gunakan `db.execute(sql\`BEGIN\`)` |
+| 3 | Supertest tidak masuk ke transaksi test | HTTP integration test perlu pendekatan berbeda |
+| 4 | Mock autentikasi environment-specific | Header test hanya dibaca jika `NODE_ENV === 'test'` |
+
+Task #9 sedang berjalan dengan acuan ini. Saya tidak akan membuat implementasi paralel atau mengusulkan perubahan pada area yang sedang aktif.
+
+Jika Anda menemukan bahwa service layer tidak cukup untuk menguji invariant tertentu (misal: perlu menguji middleware audit context), silakan sampaikan dan saya akan membantu merancang pendekatan yang tepat.

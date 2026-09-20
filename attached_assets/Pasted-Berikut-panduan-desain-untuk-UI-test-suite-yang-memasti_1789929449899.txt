@@ -1,0 +1,720 @@
+Berikut panduan desain untuk **UI test suite** yang memastikan alasan kepatuhan tetap lengkap setelah perubahan berikutnya. Test ini fokus pada komponen `package-compliance-evaluation.tsx` dengan pendekatan **mock API client** (bukan HTTP call nyata) untuk isolasi yang ketat.
+
+---
+
+## 🧪 STRATEGI TESTING
+
+### Mengapa Mock API Client (Bukan MSW/HTTP)
+
+1. **Isolasi**: Test tidak bergantung pada API server yang berjalan
+2. **Performa**: Lebih cepat karena tidak ada network overhead
+3. **Deterministik**: Response selalu sama, tidak ada flakiness
+4. **Fokus**: Menguji perilaku komponen, bukan integrasi HTTP
+
+### Struktur File Test
+
+```
+artifacts/procurement-compliance/src/
+├── components/
+│   └── package-compliance-evaluation.tsx
+└── components/__tests__/
+    ├── package-compliance-evaluation.test.tsx
+    ├── fixtures/
+    │   ├── policy-packs.ts
+    │   ├── evaluations.ts
+    │   └── contexts.ts
+    └── mocks/
+        └── api-client.ts
+```
+
+---
+
+## 📦 FIXTURE DATA
+
+### `fixtures/policy-packs.ts`
+
+```typescript
+import type { PolicyPackSummary } from '@/lib/api-client-react/src/generated/api';
+
+export const publishedPolicyPack: PolicyPackSummary = {
+  id: 'pack-published-001',
+  packName: 'GOV-CENTRAL-CONSTRUCTION',
+  version: '1.0.0',
+  regimeType: 'GOVERNMENT_CENTRAL',
+  status: 'PUBLISHED',
+  publishedAt: '2025-09-01T10:00:00Z',
+  publishedBy: 'user_admin_123',
+  description: 'Policy pack untuk pengadaan konstruksi pemerintah pusat'
+};
+
+export const draftPolicyPack: PolicyPackSummary = {
+  id: 'pack-draft-001',
+  packName: 'GOV-REGIONAL-BARANG',
+  version: '0.1.0',
+  regimeType: 'GOVERNMENT_REGIONAL',
+  status: 'DRAFT',
+  publishedAt: null,
+  publishedBy: null,
+  description: 'Draft policy pack'
+};
+
+export const emptyPolicyPacks: PolicyPackSummary[] = [];
+
+export const publishedPolicyPacks: PolicyPackSummary[] = [
+  publishedPolicyPack
+];
+```
+
+### `fixtures/evaluations.ts`
+
+```typescript
+import type { EvaluationResponse, RuleEvaluationResult } from '@/lib/api-client-react/src/generated/api';
+
+export const successfulEvaluation: EvaluationResponse = {
+  decisionReferenceId: 'dec-ref-001-uuid-1234',
+  evaluatedAt: '2025-09-21T14:30:00Z',
+  policyPack: {
+    code: 'GOV-CENTRAL-CONSTRUCTION',
+    version: '1.0.0',
+    regimeType: 'GOVERNMENT_CENTRAL'
+  },
+  results: [
+    {
+      ruleKey: 'tkdn_min_threshold_construction',
+      status: 'PASSED',
+      value: 45,
+      explanation: {
+        template: 'rule_passed_with_tkdn',
+        data: {
+          ruleKey: 'tkdn_min_threshold_construction',
+          articleNumber: '62',
+          regulationCode: 'PERPRES-46-2025',
+          requiredValue: 40,
+          actualValue: 45,
+          unit: 'percent'
+        },
+        humanReadable: 'TKDN 45% memenuhi syarat minimal 40%'
+      },
+      rule: {
+        id: 'rule-001',
+        version: 1,
+        category: 'THRESHOLD'
+      },
+      provision: {
+        id: 'prov-001',
+        articleNumber: '62',
+        clauseType: 'ayat 2',
+        rawText: 'Penyedia wajib memenuhi TKDN minimal 40% untuk pengadaan konstruksi'
+      },
+      source: {
+        id: 'source-001',
+        regulationCode: 'PERPRES-46-2025',
+        title: 'Peraturan Presiden tentang Pengadaan Barang/Jasa Pemerintah',
+        verificationStatus: 'VERIFIED',
+        isBinding: true
+      },
+      conditionMatched: {
+        entityType: 'KONSTRUKSI',
+        packageValueMin: '0',
+        packageValueMax: null
+      },
+      formulaUsed: null,
+      referencedInputs: ['tkdn_percentage', 'entity_type'],
+      overrideApplied: null
+    },
+    {
+      ruleKey: 'threshold_direct_procurement',
+      status: 'NOT_APPLICABLE',
+      value: null,
+      explanation: {
+        template: 'method_not_applicable',
+        data: {
+          procurementMethod: 'TENDER',
+          ruleScope: 'Pengadaan Langsung'
+        },
+        humanReadable: 'Aturan tidak berlaku karena metode TENDER'
+      },
+      rule: {
+        id: 'rule-002',
+        version: 1,
+        category: 'THRESHOLD'
+      },
+      provision: {
+        id: 'prov-002',
+        articleNumber: '38',
+        clauseType: 'ayat 1',
+        rawText: 'Pengadaan Langsung untuk nilai maksimal Rp 200 juta'
+      },
+      source: {
+        id: 'source-001',
+        regulationCode: 'PERPRES-46-2025',
+        title: 'Peraturan Presiden tentang Pengadaan Barang/Jasa Pemerintah',
+        verificationStatus: 'VERIFIED',
+        isBinding: true
+      },
+      conditionMatched: null,
+      formulaUsed: null,
+      referencedInputs: ['procurement_method'],
+      overrideApplied: null
+    }
+  ]
+};
+
+export const failedEvaluation: EvaluationResponse = {
+  decisionReferenceId: 'dec-ref-002-uuid-5678',
+  evaluatedAt: '2025-09-21T15:00:00Z',
+  policyPack: {
+    code: 'GOV-CENTRAL-CONSTRUCTION',
+    version: '1.0.0',
+    regimeType: 'GOVERNMENT_CENTRAL'
+  },
+  results: [
+    {
+      ruleKey: 'tkdn_min_threshold_construction',
+      status: 'FAILED',
+      value: 35,
+      explanation: {
+        template: 'rule_failed_with_tkdn',
+        data: {
+          ruleKey: 'tkdn_min_threshold_construction',
+          articleNumber: '62',
+          regulationCode: 'PERPRES-46-2025',
+          requiredValue: 40,
+          actualValue: 35,
+          unit: 'percent'
+        },
+        humanReadable: 'TKDN 35% tidak memenuhi syarat minimal 40%'
+      },
+      rule: {
+        id: 'rule-001',
+        version: 1,
+        category: 'THRESHOLD'
+      },
+      provision: {
+        id: 'prov-001',
+        articleNumber: '62',
+        clauseType: 'ayat 2',
+        rawText: 'Penyedia wajib memenuhi TKDN minimal 40%'
+      },
+      source: {
+        id: 'source-001',
+        regulationCode: 'PERPRES-46-2025',
+        title: 'Peraturan Presiden tentang Pengadaan Barang/Jasa Pemerintah',
+        verificationStatus: 'VERIFIED',
+        isBinding: true
+      },
+      conditionMatched: null,
+      formulaUsed: null,
+      referencedInputs: ['tkdn_percentage'],
+      overrideApplied: null
+    }
+  ]
+};
+
+export const evaluationWithOverride: EvaluationResponse = {
+  decisionReferenceId: 'dec-ref-003-uuid-9999',
+  evaluatedAt: '2025-09-21T16:00:00Z',
+  policyPack: {
+    code: 'GOV-CENTRAL-CONSTRUCTION',
+    version: '1.0.0',
+    regimeType: 'GOVERNMENT_CENTRAL'
+  },
+  results: [
+    {
+      ruleKey: 'threshold_direct_procurement',
+      status: 'PASSED',
+      value: 50000000,
+      explanation: {
+        template: 'override_applied',
+        data: {
+          nationalSource: 'PERPRES-46-2025',
+          overrideScope: 'REGENCY-JAKARTA',
+          justificationSource: 'PERDA-JAKARTA-2025'
+        },
+        humanReadable: 'Aturan nasional di-override oleh Perda Jakarta'
+      },
+      rule: {
+        id: 'rule-002',
+        version: 1,
+        category: 'THRESHOLD'
+      },
+      provision: {
+        id: 'prov-002',
+        articleNumber: '38',
+        clauseType: 'ayat 1',
+        rawText: 'Pengadaan Langsung untuk nilai maksimal Rp 200 juta'
+      },
+      source: {
+        id: 'source-001',
+        regulationCode: 'PERPRES-46-2025',
+        title: 'Peraturan Presiden tentang Pengadaan Barang/Jasa Pemerintah',
+        verificationStatus: 'VERIFIED',
+        isBinding: true
+      },
+      conditionMatched: null,
+      formulaUsed: null,
+      referencedInputs: ['package_value'],
+      overrideApplied: {
+        scopeType: 'REGENCY',
+        scopeId: 'JAKARTA',
+        priority: 10,
+        justificationSource: 'PERDA-JAKARTA-2025'
+      }
+    }
+  ]
+};
+```
+
+### `fixtures/contexts.ts`
+
+```typescript
+export const packageContext = {
+  packageId: 'pkg-001',
+  packageValue: 450000000,
+  procurementMethod: 'TENDER',
+  entityType: 'KONSTRUKSI',
+  fundingSource: 'APBN',
+  scopeType: 'NATIONAL',
+  tkdnPercentage: 45
+};
+
+export const packageContextFailed = {
+  ...packageContext,
+  tkdnPercentage: 35
+};
+```
+
+---
+
+## 🔧 MOCK API CLIENT
+
+### `mocks/api-client.ts`
+
+```typescript
+import { vi } from 'vitest';
+import type { EvaluationResponse, PolicyPackSummary } from '@/lib/api-client-react/src/generated/api';
+
+export const mockApiClient = {
+  getPublishedPolicyPacks: vi.fn(),
+  postRuleEvaluations: vi.fn()
+};
+
+export function setupMockApiResponses(scenario: {
+  policyPacks?: PolicyPackSummary[];
+  evaluation?: EvaluationResponse | null;
+  evaluationError?: Error;
+}) {
+  if (scenario.policyPacks !== undefined) {
+    mockApiClient.getPublishedPolicyPacks.mockResolvedValue(scenario.policyPacks);
+  }
+
+  if (scenario.evaluation !== undefined) {
+    if (scenario.evaluation === null) {
+      mockApiClient.postRuleEvaluations.mockResolvedValue(null);
+    } else {
+      mockApiClient.postRuleEvaluations.mockResolvedValue(scenario.evaluation);
+    }
+  }
+
+  if (scenario.evaluationError) {
+    mockApiClient.postRuleEvaluations.mockRejectedValue(scenario.evaluationError);
+  }
+}
+
+export function resetMockApi() {
+  mockApiClient.getPublishedPolicyPacks.mockReset();
+  mockApiClient.postRuleEvaluations.mockReset();
+}
+```
+
+---
+
+## 📝 TEST CASES
+
+### `package-compliance-evaluation.test.tsx`
+
+```typescript
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { PackageComplianceEvaluation } from '../package-compliance-evaluation';
+import { mockApiClient, setupMockApiResponses, resetMockApi } from './mocks/api-client';
+import { 
+  publishedPolicyPacks, 
+  emptyPolicyPacks, 
+  publishedPolicyPack 
+} from './fixtures/policy-packs';
+import { 
+  successfulEvaluation, 
+  failedEvaluation, 
+  evaluationWithOverride 
+} from './fixtures/evaluations';
+import { packageContext, packageContextFailed } from './fixtures/contexts';
+
+// Mock API client
+vi.mock('@/lib/api-client', () => ({
+  apiClient: mockApiClient
+}));
+
+describe('PackageComplianceEvaluation', () => {
+  beforeEach(() => {
+    resetMockApi();
+  });
+
+  describe('Initial State', () => {
+    it('should show loading state while fetching policy packs', async () => {
+      setupMockApiResponses({
+        policyPacks: new Promise(() => {}) // Never resolves
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      expect(screen.getByText(/memuat policy pack/i)).toBeInTheDocument();
+    });
+
+    it('should show empty state when no published policy packs', async () => {
+      setupMockApiResponses({
+        policyPacks: emptyPolicyPacks
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/tidak ada policy pack tersedia/i)).toBeInTheDocument();
+      });
+
+      expect(screen.queryByRole('button', { name: /mulai evaluasi/i })).toBeDisabled();
+    });
+
+    it('should show policy pack selector when packs are available', async () => {
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox', { name: /pilih policy pack/i })).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Successful Evaluation', () => {
+    beforeEach(() => {
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks,
+        evaluation: successfulEvaluation
+      });
+    });
+
+    it('should display evaluation summary with correct counts', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      // Select policy pack
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+
+      // Click evaluate
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      // Wait for results
+      await waitFor(() => {
+        expect(screen.getByText(/1 lulus/i)).toBeInTheDocument();
+        expect(screen.getByText(/1 tidak berlaku/i)).toBeInTheDocument();
+      });
+    });
+
+    it('should display decision reference with copy button', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/decision reference/i)).toBeInTheDocument();
+        expect(screen.getByText(successfulEvaluation.decisionReferenceId)).toBeInTheDocument();
+      });
+
+      // Test copy button
+      const copyButton = screen.getByRole('button', { name: /salin decision reference/i });
+      await user.click(copyButton);
+
+      // Verify clipboard (mock)
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        successfulEvaluation.decisionReferenceId
+      );
+    });
+
+    it('should display rule explanation with all required fields', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/tkdn_min_threshold_construction/i)).toBeInTheDocument();
+      });
+
+      // Expand rule detail
+      const detailButton = screen.getByRole('button', { name: /detail/i });
+      await user.click(detailButton);
+
+      // Verify all required fields are displayed
+      expect(screen.getByText(/pasal: 62/i)).toBeInTheDocument();
+      expect(screen.getByText(/sumber: PERPRES-46-2025/i)).toBeInTheDocument();
+      expect(screen.getByText(/status verifikasi/i)).toBeInTheDocument();
+      expect(screen.getByText(/VERIFIED/i)).toBeInTheDocument();
+      expect(screen.getByText(/mengikat: ya/i)).toBeInTheDocument();
+      expect(screen.getByText(/tkdn minimal: 40%/i)).toBeInTheDocument();
+      expect(screen.getByText(/tkdn aktual: 45%/i)).toBeInTheDocument();
+    });
+
+    it('should display referenced inputs as badges', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/tkdn_min_threshold_construction/i)).toBeInTheDocument();
+      });
+
+      const detailButton = screen.getByRole('button', { name: /detail/i });
+      await user.click(detailButton);
+
+      expect(screen.getByText(/tkdn_percentage/i)).toBeInTheDocument();
+      expect(screen.getByText(/entity_type/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Failed Evaluation', () => {
+    beforeEach(() => {
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks,
+        evaluation: failedEvaluation
+      });
+    });
+
+    it('should display failed status with correct styling', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContextFailed} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/1 gagal/i)).toBeInTheDocument();
+      });
+
+      // Expand rule detail
+      const detailButton = screen.getByRole('button', { name: /detail/i });
+      await user.click(detailButton);
+
+      // Verify failed explanation
+      expect(screen.getByText(/tidak terpenuhi/i)).toBeInTheDocument();
+      expect(screen.getByText(/tkdn minimal: 40%/i)).toBeInTheDocument();
+      expect(screen.getByText(/tkdn aktual: 35%/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Evaluation with Override', () => {
+    beforeEach(() => {
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks,
+        evaluation: evaluationWithOverride
+      });
+    });
+
+    it('should display override information when applied', async () => {
+      const user = userEvent.setup();
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/override diterapkan/i)).toBeInTheDocument();
+      });
+
+      const detailButton = screen.getByRole('button', { name: /detail/i });
+      await user.click(detailButton);
+
+      expect(screen.getByText(/override diterapkan/i)).toBeInTheDocument();
+      expect(screen.getByText(/REGENCY/i)).toBeInTheDocument();
+      expect(screen.getByText(/JAKARTA/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Error States', () => {
+    it('should display error message when evaluation fails', async () => {
+      const user = userEvent.setup();
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks,
+        evaluationError: new Error('Konteks tidak lengkap: field "tkdn_percentage" wajib diisi')
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/evaluasi gagal/i)).toBeInTheDocument();
+        expect(screen.getByText(/konteks tidak lengkap/i)).toBeInTheDocument();
+      });
+
+      // Verify retry button exists
+      expect(screen.getByRole('button', { name: /coba lagi/i })).toBeInTheDocument();
+    });
+
+    it('should allow retry after error', async () => {
+      const user = userEvent.setup();
+      
+      // First call fails
+      mockApiClient.postRuleEvaluations
+        .mockRejectedValueOnce(new Error('Network error'))
+        .mockResolvedValueOnce(successfulEvaluation);
+
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('combobox'));
+      await user.click(screen.getByText(publishedPolicyPack.packName));
+      await user.click(screen.getByRole('button', { name: /mulai evaluasi/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/evaluasi gagal/i)).toBeInTheDocument();
+      });
+
+      // Click retry
+      await user.click(screen.getByRole('button', { name: /coba lagi/i }));
+
+      // Should show results after retry
+      await waitFor(() => {
+        expect(screen.getByText(/1 lulus/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('should have proper ARIA labels', async () => {
+      setupMockApiResponses({
+        policyPacks: publishedPolicyPacks,
+        evaluation: successfulEvaluation
+      });
+
+      render(<PackageComplianceEvaluation packageContext={packageContext} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('combobox', { name: /pilih policy pack/i })).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /mulai evaluasi/i })).toBeInTheDocument();
+    });
+  });
+});
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] File test dibuat di `artifacts/procurement-compliance/src/components/__tests__/`
+- [ ] Fixture data mencakup semua skenario (success, failed, override, empty)
+- [ ] Mock API client di-setup dengan benar
+- [ ] Test initial state (loading, empty, selector)
+- [ ] Test successful evaluation dengan semua field wajib
+- [ ] Test decision reference tampil dan bisa disalin
+- [ ] Test explanation terstruktur tampil lengkap (pasal, sumber, verifikasi, input, output)
+- [ ] Test failed evaluation dengan styling yang benar
+- [ ] Test override information tampil
+- [ ] Test error state dengan pesan yang jelas
+- [ ] Test retry functionality
+- [ ] Test accessibility (ARIA labels)
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+- [ ] Coverage minimal 80% untuk komponen `package-compliance-evaluation.tsx`
+
+---
+
+## 🚀 CARA MENJALANKAN TEST
+
+```bash
+cd artifacts/procurement-compliance
+
+# Jalankan semua test
+npm test
+
+# Jalankan hanya test ini
+npm test -- package-compliance-evaluation.test.tsx
+
+# Jalankan dengan coverage
+npm run test:coverage
+
+# Jalankan dalam watch mode
+npm run test:watch
+```
+
+---
+
+## ⚠️ CATATAN PENTING
+
+1. **Mock navigator.clipboard**: Tambahkan setup di `vitest.config.ts` atau `setupTests.ts`:
+```typescript
+Object.assign(navigator, {
+  clipboard: {
+    writeText: vi.fn()
+  }
+});
+```
+
+2. **Component props**: Sesuaikan dengan signature aktual `PackageComplianceEvaluation`. Jika komponen menerima props lain (misal: `packageId`), tambahkan ke fixture.
+
+3. **API client path**: Sesuaikan path import `@/lib/api-client` dengan struktur aktual workspace.
+
+4. **Testing library**: Pastikan `@testing-library/react`, `@testing-library/user-event`, dan `vitest` sudah terinstall.
+
+5. **Invariant yang dijaga**:
+   - Explanation selalu terstruktur (template + data), bukan HTML mentah
+   - Decision reference ID ditampilkan persis seperti dari API
+   - Semua field wajib (pasal, sumber, verifikasi, input, output) harus tampil
+   - Loading, error, empty state ditangani dengan jelas
+
+Silakan lanjutkan implementasi. Jika ada inkonsistensi antara fixture dan response API aktual, saya siap membantu menyesuaikan.

@@ -1,0 +1,409 @@
+Berikut panduan desain untuk **tes integrasi constraint unik policy pack lintas regime** yang mencegah regresi pada batas unik tiga kolom.
+
+---
+
+## 🧪 STRATEGI TESTING
+
+### Masalah Koneksi (Sesuai Keputusan Sebelumnya)
+
+Tes ini melibatkan **mutasi database** (INSERT policy pack), sehingga masalah koneksi pinned vs supertest berlaku. Rekomendasi: **Opsi 3** — uji service langsung dengan pinned transaction, lalu uji HTTP contract secara terpisah.
+
+**Alasan:**
+- Constraint unik adalah logika database + error mapping di handler
+- Service test memverifikasi constraint database bekerja
+- HTTP test memverifikasi error mapping (409 + pesan jelas)
+- Keduanya bisa berjalan independen
+
+---
+
+## 📦 STRUKTUR FILE
+
+```
+artifacts/api-server/src/tests/
+├── policy-pack-unique-constraint.test.ts
+└── helpers/
+    ├── test-db.ts
+    └── test-auth.ts
+```
+
+---
+
+## 🧪 TEST CASES
+
+### `policy-pack-unique-constraint.test.ts`
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { eq, and } from 'drizzle-orm';
+import { Pool, PoolClient } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import * as schema from '@procurement/db/schema';
+import { policyPacks } from '@procurement/db/schema';
+import request from 'supertest';
+import { app } from '../index';
+import { testAuthHeader, TEST_USERS } from './helpers/test-auth';
+
+describe('Policy Pack Unique Constraint (packName + regimeType + version)', () => {
+  let pool: Pool;
+  let client: PoolClient;
+  let testDb: ReturnType<typeof drizzle<typeof schema>>;
+
+  beforeAll(async () => {
+    pool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL || process.env.DATABASE_URL
+    });
+  });
+
+  afterAll(async () => {
+    if (pool) await pool.end();
+  });
+
+  beforeEach(async () => {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    testDb = drizzle(client, { schema });
+
+    // Inject testDb ke aplikasi agar handler menggunakan koneksi yang sama
+    app.set('db', testDb);
+  });
+
+  afterEach(async () => {
+    await client.query('ROLLBACK');
+    client.release();
+  });
+
+  // ============================================
+  // GROUP 1: Nama + Versi Sama, Regime Berbeda → BERHASIL
+  // ============================================
+  describe('Same name and version across different regimes', () => {
+    it('should allow creating packs with same name and version but different regimeType', async () => {
+      // Buat pack pertama: GOVERNMENT_CENTRAL
+      const [pack1] = await testDb.insert(policyPacks).values({
+        packName: 'PROCUREMENT-STANDARD',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        status: 'DRAFT',
+        description: 'Pack untuk pemerintah pusat'
+      }).returning();
+
+      expect(pack1).toBeDefined();
+      expect(pack1.packName).toBe('PROCUREMENT-STANDARD');
+      expect(pack1.regimeType).toBe('GOVERNMENT_CENTRAL');
+
+      // Buat pack kedua: nama dan versi sama, regime berbeda
+      const [pack2] = await testDb.insert(policyPacks).values({
+        packName: 'PROCUREMENT-STANDARD',
+        regimeType: 'GOVERNMENT_REGIONAL',
+        version: '1.0.0',
+        status: 'DRAFT',
+        description: 'Pack untuk pemerintah daerah'
+      }).returning();
+
+      expect(pack2).toBeDefined();
+      expect(pack2.packName).toBe('PROCUREMENT-STANDARD');
+      expect(pack2.regimeType).toBe('GOVERNMENT_REGIONAL');
+
+      // Buat pack ketiga: nama dan versi sama, regime berbeda lagi
+      const [pack3] = await testDb.insert(policyPacks).values({
+        packName: 'PROCUREMENT-STANDARD',
+        regimeType: 'BUMN',
+        version: '1.0.0',
+        status: 'DRAFT',
+        description: 'Pack untuk BUMN'
+      }).returning();
+
+      expect(pack3).toBeDefined();
+      expect(pack3.regimeType).toBe('BUMN');
+
+      // Verifikasi ketiga pack ada di database
+      const allPacks = await testDb.query.policyPacks.findMany({
+        where: eq(policyPacks.packName, 'PROCUREMENT-STANDARD')
+      });
+
+      expect(allPacks.length).toBe(3);
+    });
+
+    it('should allow same name across regimes with different versions', async () => {
+      const [pack1] = await testDb.insert(policyPacks).values({
+        packName: 'CONSTRUCTION-RULES',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        status: 'DRAFT'
+      }).returning();
+
+      const [pack2] = await testDb.insert(policyPacks).values({
+        packName: 'CONSTRUCTION-RULES',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '2.0.0',
+        status: 'DRAFT'
+      }).returning();
+
+      const [pack3] = await testDb.insert(policyPacks).values({
+        packName: 'CONSTRUCTION-RULES',
+        regimeType: 'GOVERNMENT_REGIONAL',
+        version: '1.0.0',
+        status: 'DRAFT'
+      }).returning();
+
+      expect(pack1).toBeDefined();
+      expect(pack2).toBeDefined();
+      expect(pack3).toBeDefined();
+    });
+  });
+
+  // ============================================
+  // GROUP 2: Nama + Regime + Versi Sama → DITOLAK
+  // ============================================
+  describe('Duplicate name, regime, and version', () => {
+    it('should reject duplicate packName + regimeType + version at database level', async () => {
+      // Buat pack pertama
+      await testDb.insert(policyPacks).values({
+        packName: 'DUPLICATE-TEST',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        status: 'DRAFT'
+      });
+
+      // Coba buat pack dengan nama, regime, dan versi yang sama
+      await expect(
+        testDb.insert(policyPacks).values({
+          packName: 'DUPLICATE-TEST',
+          regimeType: 'GOVERNMENT_CENTRAL',
+          version: '1.0.0',
+          status: 'DRAFT'
+        })
+      ).rejects.toThrow();
+    });
+
+    it('should reject duplicate even if other fields differ', async () => {
+      await testDb.insert(policyPacks).values({
+        packName: 'DUPLICATE-TEST-2',
+        regimeType: 'BUMN',
+        version: '3.0.0',
+        status: 'DRAFT',
+        description: 'Deskripsi pertama'
+      });
+
+      // Deskripsi berbeda, tapi name+regime+version sama → tetap ditolak
+      await expect(
+        testDb.insert(policyPacks).values({
+          packName: 'DUPLICATE-TEST-2',
+          regimeType: 'BUMN',
+          version: '3.0.0',
+          status: 'REVIEWED', // Status berbeda
+          description: 'Deskripsi kedua' // Deskripsi berbeda
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  // ============================================
+  // GROUP 3: HTTP API — Error Mapping 409
+  // ============================================
+  describe('HTTP API error mapping', () => {
+    it('should return 409 with clear message when creating duplicate pack via API', async () => {
+      // Buat pack pertama via API
+      const res1 = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'API-DUPLICATE-TEST',
+          regimeType: 'GOVERNMENT_CENTRAL',
+          version: '1.0.0',
+          description: 'Pack pertama'
+        });
+
+      expect(res1.status).toBe(201);
+
+      // Coba buat duplikat via API
+      const res2 = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'API-DUPLICATE-TEST',
+          regimeType: 'GOVERNMENT_CENTRAL',
+          version: '1.0.0',
+          description: 'Pack kedua (duplikat)'
+        });
+
+      expect(res2.status).toBe(409);
+      expect(res2.body.error).toBeDefined();
+      // Pesan harus jelas, bukan error database mentah
+      expect(res2.body.error).not.toContain('duplicate key value violates');
+      expect(res2.body.error).toMatch(/sudah ada|already exists|duplikat|duplicate/i);
+    });
+
+    it('should return 201 when creating same name/version with different regime via API', async () => {
+      // Buat pack pertama
+      const res1 = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'API-CROSS-REGIME',
+          regimeType: 'GOVERNMENT_CENTRAL',
+          version: '1.0.0',
+          description: 'Pack pusat'
+        });
+
+      expect(res1.status).toBe(201);
+
+      // Buat pack dengan nama dan versi sama, regime berbeda
+      const res2 = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'API-CROSS-REGIME',
+          regimeType: 'GOVERNMENT_REGIONAL',
+          version: '1.0.0',
+          description: 'Pack daerah'
+        });
+
+      expect(res2.status).toBe(201);
+      expect(res2.body.regimeType).toBe('GOVERNMENT_REGIONAL');
+    });
+
+    it('should not expose raw database error messages', async () => {
+      await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'RAW-ERROR-TEST',
+          regimeType: 'BUMN',
+          version: '1.0.0'
+        });
+
+      const res = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'RAW-ERROR-TEST',
+          regimeType: 'BUMN',
+          version: '1.0.0'
+        });
+
+      expect(res.status).toBe(409);
+      // Pastikan tidak ada pesan database mentah
+      expect(res.body.error).not.toContain('unique constraint');
+      expect(res.body.error).not.toContain('policy_pack_version_unique');
+      expect(res.body.error).not.toContain('Key (pack_name');
+    });
+  });
+
+  // ============================================
+  // GROUP 4: Regresi Constraint Lama (Hanya name + version)
+  // ============================================
+  describe('Regression: old two-column constraint must not return', () => {
+    it('should NOT block same name+version on different regimes (old behavior)', async () => {
+      // Ini adalah tes regresi eksplisit.
+      // Jika constraint lama (hanya packName + version) kembali,
+      // insert kedua akan gagal.
+
+      const regimes = [
+        'GOVERNMENT_CENTRAL',
+        'GOVERNMENT_REGIONAL',
+        'VILLAGE',
+        'BUMN',
+        'BUMD'
+      ];
+
+      const createdIds: string[] = [];
+
+      for (const regime of regimes) {
+        const [pack] = await testDb.insert(policyPacks).values({
+          packName: 'REGRESSION-TEST',
+          regimeType: regime,
+          version: '1.0.0',
+          status: 'DRAFT'
+        }).returning();
+
+        createdIds.push(pack.id);
+      }
+
+      // Semua 5 regime harus berhasil dibuat
+      expect(createdIds.length).toBe(5);
+
+      // Verifikasi semua ada di database
+      const allPacks = await testDb.query.policyPacks.findMany({
+        where: eq(policyPacks.packName, 'REGRESSION-TEST')
+      });
+
+      expect(allPacks.length).toBe(5);
+    });
+  });
+});
+```
+
+---
+
+## 🔧 HANDLER ERROR MAPPING (Referensi Implementasi)
+
+Handler di `legal-admin.ts` harus menangkap constraint violation dan memetakan ke 409:
+
+```typescript
+// artifacts/api-server/src/routes/legal-admin.ts
+import { PgError } from 'drizzle-orm/pg-core';
+
+app.post('/api/admin/policy-packs', async (req, res) => {
+  const { packName, regimeType, version, description } = req.body;
+  const db = req.app.get('db') || defaultDb;
+
+  try {
+    const [pack] = await db.insert(policyPacks).values({
+      packName,
+      regimeType,
+      version,
+      status: 'DRAFT',
+      description
+    }).returning();
+
+    return res.status(201).json(pack);
+  } catch (error: any) {
+    // Tangkap unique constraint violation
+    if (error.code === '23505') {
+      return res.status(409).json({
+        error: `Policy pack dengan nama "${packName}", regime "${regimeType}", dan versi "${version}" sudah ada. Gunakan versi baru untuk perubahan.`,
+        code: 'DUPLICATE_POLICY_PACK',
+        details: { packName, regimeType, version }
+      });
+    }
+    throw error;
+  }
+});
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Test file dibuat
+- [ ] Pinned connection + DI ke aplikasi
+- [ ] Test: nama+versi sama, regime berbeda → berhasil (3 regime)
+- [ ] Test: nama+versi sama, regime sama → ditolak di database
+- [ ] Test: duplikat dengan field lain berbeda → tetap ditolak
+- [ ] Test HTTP: duplikat → 409 dengan pesan jelas
+- [ ] Test HTTP: lintas regime → 201
+- [ ] Test HTTP: tidak ada pesan database mentah
+- [ ] Test regresi: 5 regime dengan nama+versi sama → semua berhasil
+- [ ] Handler memetakan error `23505` ke 409
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+
+---
+
+## ⚠️ INVARIANT YANG DIJAGA
+
+1. **Constraint tiga kolom**: `packName + regimeType + version`, bukan hanya `packName + version`
+2. **Error mapping**: 409 dengan pesan jelas, bukan pesan database mentah
+3. **Transaksi rollback**: Data test tidak bocor ke database lain
+4. **Mock Clerk**: Header test hanya di `NODE_ENV=test`
+5. **Fixture fiktif**: Tidak ada klaim legal konkret
+
+---
+
+## 📊 STATUS
+
+- ✅ Task #17 sedang berjalan tanpa interferensi
+- ✅ Workflow stabil
+- ✅ Panduan siap diimplementasikan
+
+Silakan lanjutkan Task #17.

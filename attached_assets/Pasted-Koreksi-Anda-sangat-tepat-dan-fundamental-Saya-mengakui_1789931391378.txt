@@ -1,0 +1,246 @@
+Koreksi Anda **sangat tepat dan fundamental**. Saya mengakui bahwa contoh test sebelumnya memiliki **cacat arsitektural** yang akan menyebabkan kegagalan test.
+
+---
+
+## 🔍 ANALISIS MASALAH
+
+### Mengapa Contoh Sebelumnya Tidak Bekerja
+
+```typescript
+// ❌ SALAH: Ini tidak akan bekerja
+beforeEach(async () => {
+  testDb = await beginTransaction(); // Koneksi A, transaksi dimulai
+  
+  // Data dibuat di koneksi A, belum commit
+  const [dec1] = await testDb.insert(decisionReferences).values({...}).returning();
+});
+
+it('should return decision', async () => {
+  // Supertest menggunakan koneksi B dari pool aplikasi
+  // Koneksi B TIDAK bisa melihat data di koneksi A yang belum commit!
+  const res = await request(app)
+    .get(`/api/decisions/${decisionId1}`)
+    .set(testAuthHeader(TEST_USERS.ADMIN));
+  
+  // res.status akan 404 karena data tidak terlihat
+});
+```
+
+**Masalahnya:**
+- PostgreSQL default isolation level: `READ COMMITTED`
+- Transaksi di koneksi A tidak terlihat oleh koneksi B sampai `COMMIT`
+- Supertest menggunakan connection pool aplikasi, bukan `testDb`
+- Test akan gagal dengan 404 atau data tidak konsisten
+
+---
+
+## ✅ SOLUSI YANG VALID (Sesuai Arahan Anda)
+
+### Opsi 1: Dependency Injection testDb ke Aplikasi
+
+```typescript
+beforeEach(async () => {
+  client = await pool.connect();
+  await client.query('BEGIN');
+  testDb = drizzle(client, { schema });
+  
+  // Inject testDb ke aplikasi
+  app.set('db', testDb);
+  
+  // Setup data
+  const [dec1] = await testDb.insert(decisionReferences).values({...}).returning();
+  decisionId1 = dec1.id;
+});
+
+afterEach(async () => {
+  await client.query('ROLLBACK');
+  client.release();
+});
+```
+
+**Keuntungan:**
+- Semua operasi (test + API) menggunakan koneksi yang sama
+- Transaksi bekerja dengan benar
+- ROLLBACK membatalkan semua perubahan
+
+**Tantangan:**
+- Perlu mekanisme DI di API server
+- Handler harus bisa menerima `db` instance dari luar
+
+### Opsi 2: Database Test Terisolasi + Commit Data
+
+```typescript
+beforeAll(async () => {
+  // Gunakan database test terpisah
+  testPool = new Pool({ 
+    connectionString: process.env.TEST_DATABASE_URL 
+  });
+  testDb = drizzle(testPool, { schema });
+  
+  // Inject ke aplikasi
+  app.set('db', testDb);
+});
+
+beforeEach(async () => {
+  // Data di-commit, bukan dalam transaksi
+  const [dec1] = await testDb.insert(decisionReferences).values({...}).returning();
+  decisionId1 = dec1.id;
+});
+
+afterEach(async () => {
+  // Cleanup manual (DELETE) untuk data non-immutable
+  // Untuk decision_references, biarkan menumpuk atau reset database
+  await testDb.delete(decisionReferences).where(eq(decisionReferences.id, decisionId1));
+});
+
+afterAll(async () => {
+  // Reset database atau truncate semua tabel
+  await testPool.end();
+});
+```
+
+**Keuntungan:**
+- Lebih sederhana, tidak perlu DI kompleks
+- Data visible oleh semua koneksi
+
+**Kekurangan:**
+- Cleanup manual bisa rumit untuk entitas immutable
+- Lebih lambat karena ada commit/rollback
+
+### Opsi 3: Test Service Langsung + HTTP Contract Terpisah
+
+```typescript
+// Test 1: Service layer dengan pinned transaction
+describe('Decision Service', () => {
+  beforeEach(async () => {
+    client = await pool.connect();
+    await client.query('BEGIN');
+    testDb = drizzle(client, { schema });
+  });
+
+  afterEach(async () => {
+    await client.query('ROLLBACK');
+    client.release();
+  });
+
+  it('should retrieve decision with complete snapshot', async () => {
+    // Setup data di testDb
+    const [dec1] = await testDb.insert(decisionReferences).values({...}).returning();
+    
+    // Test service langsung, bukan HTTP
+    const result = await getDecisionReference(dec1.id, testDb);
+    
+    expect(result.snapshot).toBeDefined();
+    expect(result.evaluationInput).toBeDefined();
+  });
+});
+
+// Test 2: HTTP contract dengan mock service
+describe('Decision HTTP Contract', () => {
+  it('should return 400 for invalid UUID', async () => {
+    const res = await request(app)
+      .get('/api/decisions/invalid-uuid')
+      .set(testAuthHeader(TEST_USERS.ADMIN));
+    
+    expect(res.status).toBe(400);
+  });
+
+  it('should return 404 for non-existent decision', async () => {
+    // Mock service return null
+    vi.mock('../services/decision-service', () => ({
+      getDecisionReference: vi.fn().mockResolvedValue(null)
+    }));
+    
+    const res = await request(app)
+      .get(`/api/decisions/${randomUUID()}`)
+      .set(testAuthHeader(TEST_USERS.ADMIN));
+    
+    expect(res.status).toBe(404);
+  });
+});
+```
+
+**Keuntungan:**
+- Service test: transaksi bekerja sempurna
+- HTTP test: cepat, tidak perlu setup database
+- Separation of concerns jelas
+
+**Kekurangan:**
+- Perlu dua set test
+- HTTP test tidak menguji integrasi penuh
+
+---
+
+## 🔐 AUTHORIZATION: Mock Clerk Verifier
+
+### Implementasi yang Benar
+
+```typescript
+// artifacts/api-server/src/middleware/clerk.ts
+import { getAuth } from '@clerk/express';
+import { verifyToken } from '@clerk/backend';
+
+export function clerkAuthMiddleware(req, res, next) {
+  if (process.env.NODE_ENV === 'test') {
+    return testClerkAuth(req, res, next);
+  }
+  return productionClerkAuth(req, res, next);
+}
+
+async function productionClerkAuth(req, res, next) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+    
+    // Verifikasi token dengan Clerk asli
+    const payload = await verifyToken(token, { 
+      secretKey: process.env.CLERK_SECRET_KEY 
+    });
+    
+    req.auth = { userId: payload.sub };
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+async function testClerkAuth(req, res, next) {
+  // Test environment: gunakan mock verifier
+  const testUserId = req.headers['x-test-user-id'];
+  if (!testUserId) {
+    return res.status(401).json({ error: 'X-Test-User-Id required in test environment' });
+  }
+  
+  req.auth = { userId: testUserId };
+  next();
+}
+```
+
+**Keuntungan:**
+- Aman di production (header `X-Test-User-Id` diabaikan)
+- Eksplisit (developer tahu test pakai mock)
+- Tidak ada backdoor
+
+---
+
+## 📋 CONSTRAINT YANG DICATAT
+
+| # | Constraint | Implikasi |
+|---|------------|-----------|
+| 1 | Fixture dan request harus pakai koneksi yang sama | Pilih salah satu dari 3 solusi DI |
+| 2 | Authorization pakai mock Clerk verifier | Header `X-Test-User-Id` hanya di `NODE_ENV=test` |
+| 3 | Cakupan test sudah tepat | 400/404, snapshot utuh, read-only, pagination, filter, ordering, authorization |
+| 4 | Task #16 sedang berjalan | Tidak ada interferensi paralel |
+
+---
+
+## ✅ STATUS
+
+- ✅ Task #16 sedang berjalan tanpa interferensi
+- ✅ Workflow stabil
+- ✅ Ketiga solusi valid dicatat sebagai acuan implementasi
+- ✅ Mock Clerk verifier dicatat sebagai constraint
+
+Saya tidak akan membuat implementasi paralel. Silakan lanjutkan Task #16 dengan pendekatan yang paling sesuai dengan arsitektur API server saat ini.

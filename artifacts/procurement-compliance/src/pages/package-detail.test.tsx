@@ -13,6 +13,7 @@ import PackageDetail from "./package-detail";
 
 const state = vi.hoisted(() => ({
   publishedPacks: [] as PublishedPolicyPack[],
+  publishedPacksError: false,
   evaluationResult: null as RuleEvaluationResult | null,
   evaluationError: null as (Error & { data?: { error?: string } }) | null,
   evaluationMutate: vi.fn(),
@@ -37,7 +38,7 @@ vi.mock("@workspace/api-client-react", async () => {
     useListPublishedPolicyPacks: () => ({
       data: state.publishedPacks,
       isLoading: false,
-      isError: false,
+      isError: state.publishedPacksError,
     }),
     getGetDecisionQueryKey: (reference: string) => ["decisions", reference],
     useListDecisions: () => ({
@@ -182,6 +183,7 @@ function renderPage() {
 describe("detail paket: evaluasi kepatuhan", () => {
   beforeEach(() => {
     state.publishedPacks = [];
+    state.publishedPacksError = false;
     state.evaluationResult = null;
     state.evaluationError = null;
     state.evaluationMutate.mockReset();
@@ -245,6 +247,20 @@ describe("detail paket: evaluasi kepatuhan", () => {
 
     expect(screen.getByTestId("status-no-published-policy-pack")).toHaveTextContent(
       "Policy pack terpublikasi belum tersedia",
+    );
+    expect(screen.queryByTestId("button-evaluate-compliance")).not.toBeInTheDocument();
+  });
+
+  it("menampilkan arahan memuat ulang saat daftar policy pack gagal dimuat", () => {
+    state.publishedPacksError = true;
+
+    renderPage();
+
+    expect(screen.getByTestId("status-policy-packs-error")).toHaveTextContent(
+      "Policy pack gagal dimuat",
+    );
+    expect(screen.getByTestId("status-policy-packs-error")).toHaveTextContent(
+      "Muat ulang halaman untuk mencoba kembali.",
     );
     expect(screen.queryByTestId("button-evaluate-compliance")).not.toBeInTheDocument();
   });

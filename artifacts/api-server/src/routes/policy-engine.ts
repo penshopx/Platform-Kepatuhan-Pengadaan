@@ -83,6 +83,17 @@ router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {
         )
         .where(eq(policyPackRulesTable.policyPackId, pack.id));
       if (!rows.length) throw new Error("Policy pack belum memiliki aturan");
+      const unverified = rows
+        .filter(({ source }) => source.verificationStatus !== "VERIFIED")
+        .map(
+          ({ source }) =>
+            `${source.regulationCode} (${source.verificationStatus})`,
+        );
+      if (unverified.length) {
+        throw new Error(
+          `Publikasi gagal: sumber belum VERIFIED — ${[...new Set(unverified)].join(", ")}`,
+        );
+      }
 
       await tx.execute(
         sql`select set_audit_context(${actor.id}, 'USER', ${actor.role}, 'Publish reviewed policy pack')`,

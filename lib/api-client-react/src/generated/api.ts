@@ -21,14 +21,25 @@ import type {
 
 import type {
   Activity,
+  BusinessRule,
+  BusinessRuleInput,
   Dashboard,
   EpurchasingReview,
   HealthStatus,
+  LegalSource,
+  LegalSourceInput,
+  LegalSourceUpdate,
   ListPackagesParams,
   PackageInput,
   PackageUpdate,
+  PolicyPack,
+  PolicyPackInput,
+  PolicyPackRuleInput,
+  PolicyPackTransition,
   ProcurementPackage,
   ProcurementPackageDetail,
+  Provision,
+  ProvisionInput,
   PublishedPolicyPack,
   Regulation,
   ReviewCompletionInput,
@@ -874,6 +885,857 @@ export function useListActivity<TData = Awaited<ReturnType<typeof listActivity>>
 
 
 
+
+export const getListLegalSourcesUrl = () => {
+
+
+
+
+  return `/api/legal-sources`
+}
+
+/**
+ * @summary List legal sources and provisions
+ */
+export const listLegalSources = async ( options?: Parameters<typeof customFetch>[1]): Promise<LegalSource[]> => {
+
+  return customFetch<LegalSource[]>(getListLegalSourcesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListLegalSourcesQueryKey = () => {
+    return [
+    `/api/legal-sources`
+    ] as const;
+    }
+
+
+export const getListLegalSourcesQueryOptions = <TData = Awaited<ReturnType<typeof listLegalSources>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listLegalSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListLegalSourcesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listLegalSources>>> = ({ signal }) => listLegalSources({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listLegalSources>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListLegalSourcesQueryResult = NonNullable<Awaited<ReturnType<typeof listLegalSources>>>
+export type ListLegalSourcesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List legal sources and provisions
+ */
+
+export function useListLegalSources<TData = Awaited<ReturnType<typeof listLegalSources>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listLegalSources>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListLegalSourcesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateLegalSourceUrl = () => {
+
+
+
+
+  return `/api/legal-sources`
+}
+
+/**
+ * @summary Create a legal source
+ */
+export const createLegalSource = async (legalSourceInput: LegalSourceInput, options?: Parameters<typeof customFetch>[1]): Promise<LegalSource> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<LegalSource>(getCreateLegalSourceUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(legalSourceInput)
+  }
+);}
+
+
+
+
+
+export const getCreateLegalSourceMutationKey = () => ['createLegalSource'] as const;
+
+export const getCreateLegalSourceMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLegalSource>>, TError,CreateLegalSourceMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createLegalSource>>, TError,CreateLegalSourceMutationVariables, TContext> => {
+
+const mutationKey = getCreateLegalSourceMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createLegalSource>>, CreateLegalSourceMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createLegalSource(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateLegalSourceMutationResult = NonNullable<Awaited<ReturnType<typeof createLegalSource>>>
+    export type CreateLegalSourceMutationBody = BodyType<LegalSourceInput>
+    export type CreateLegalSourceMutationError = ErrorType<unknown>
+    export type CreateLegalSourceMutationVariables = {data: BodyType<LegalSourceInput>}
+
+    /**
+ * @summary Create a legal source
+ */
+export const useCreateLegalSource = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createLegalSource>>, TError,CreateLegalSourceMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createLegalSource>>,
+        TError,
+        CreateLegalSourceMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateLegalSourceMutationOptions(options));
+    }
+
+export const getUpdateLegalSourceUrl = (id: string,) => {
+
+
+
+
+  return `/api/legal-sources/${id}`
+}
+
+/**
+ * @summary Update a legal source and verification status
+ */
+export const updateLegalSource = async (id: string,
+    legalSourceUpdate: LegalSourceUpdate, options?: Parameters<typeof customFetch>[1]): Promise<LegalSource> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<LegalSource>(getUpdateLegalSourceUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(legalSourceUpdate)
+  }
+);}
+
+
+
+
+
+export const getUpdateLegalSourceMutationKey = () => ['updateLegalSource'] as const;
+
+export const getUpdateLegalSourceMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLegalSource>>, TError,UpdateLegalSourceMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateLegalSource>>, TError,UpdateLegalSourceMutationVariables, TContext> => {
+
+const mutationKey = getUpdateLegalSourceMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateLegalSource>>, UpdateLegalSourceMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateLegalSource(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateLegalSourceMutationResult = NonNullable<Awaited<ReturnType<typeof updateLegalSource>>>
+    export type UpdateLegalSourceMutationBody = BodyType<LegalSourceUpdate>
+    export type UpdateLegalSourceMutationError = ErrorType<unknown>
+    export type UpdateLegalSourceMutationVariables = {id: string;data: BodyType<LegalSourceUpdate>}
+
+    /**
+ * @summary Update a legal source and verification status
+ */
+export const useUpdateLegalSource = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateLegalSource>>, TError,UpdateLegalSourceMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateLegalSource>>,
+        TError,
+        UpdateLegalSourceMutationVariables,
+        TContext
+      > => {
+      return useMutation(getUpdateLegalSourceMutationOptions(options));
+    }
+
+export const getCreateProvisionUrl = (id: string,) => {
+
+
+
+
+  return `/api/legal-sources/${id}/provisions`
+}
+
+/**
+ * @summary Add a provision to a legal source
+ */
+export const createProvision = async (id: string,
+    provisionInput: ProvisionInput, options?: Parameters<typeof customFetch>[1]): Promise<Provision> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<Provision>(getCreateProvisionUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(provisionInput)
+  }
+);}
+
+
+
+
+
+export const getCreateProvisionMutationKey = () => ['createProvision'] as const;
+
+export const getCreateProvisionMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createProvision>>, TError,CreateProvisionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createProvision>>, TError,CreateProvisionMutationVariables, TContext> => {
+
+const mutationKey = getCreateProvisionMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createProvision>>, CreateProvisionMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createProvision(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateProvisionMutationResult = NonNullable<Awaited<ReturnType<typeof createProvision>>>
+    export type CreateProvisionMutationBody = BodyType<ProvisionInput>
+    export type CreateProvisionMutationError = ErrorType<unknown>
+    export type CreateProvisionMutationVariables = {id: string;data: BodyType<ProvisionInput>}
+
+    /**
+ * @summary Add a provision to a legal source
+ */
+export const useCreateProvision = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createProvision>>, TError,CreateProvisionMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createProvision>>,
+        TError,
+        CreateProvisionMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateProvisionMutationOptions(options));
+    }
+
+export const getListBusinessRulesUrl = () => {
+
+
+
+
+  return `/api/business-rules`
+}
+
+/**
+ * @summary List versioned business rules and conditions
+ */
+export const listBusinessRules = async ( options?: Parameters<typeof customFetch>[1]): Promise<BusinessRule[]> => {
+
+  return customFetch<BusinessRule[]>(getListBusinessRulesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListBusinessRulesQueryKey = () => {
+    return [
+    `/api/business-rules`
+    ] as const;
+    }
+
+
+export const getListBusinessRulesQueryOptions = <TData = Awaited<ReturnType<typeof listBusinessRules>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listBusinessRules>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListBusinessRulesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listBusinessRules>>> = ({ signal }) => listBusinessRules({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listBusinessRules>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListBusinessRulesQueryResult = NonNullable<Awaited<ReturnType<typeof listBusinessRules>>>
+export type ListBusinessRulesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List versioned business rules and conditions
+ */
+
+export function useListBusinessRules<TData = Awaited<ReturnType<typeof listBusinessRules>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listBusinessRules>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListBusinessRulesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateBusinessRuleUrl = () => {
+
+
+
+
+  return `/api/business-rules`
+}
+
+/**
+ * @summary Create a rule version and its application condition
+ */
+export const createBusinessRule = async (businessRuleInput: BusinessRuleInput, options?: Parameters<typeof customFetch>[1]): Promise<BusinessRule> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<BusinessRule>(getCreateBusinessRuleUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(businessRuleInput)
+  }
+);}
+
+
+
+
+
+export const getCreateBusinessRuleMutationKey = () => ['createBusinessRule'] as const;
+
+export const getCreateBusinessRuleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createBusinessRule>>, TError,CreateBusinessRuleMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createBusinessRule>>, TError,CreateBusinessRuleMutationVariables, TContext> => {
+
+const mutationKey = getCreateBusinessRuleMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createBusinessRule>>, CreateBusinessRuleMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createBusinessRule(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateBusinessRuleMutationResult = NonNullable<Awaited<ReturnType<typeof createBusinessRule>>>
+    export type CreateBusinessRuleMutationBody = BodyType<BusinessRuleInput>
+    export type CreateBusinessRuleMutationError = ErrorType<unknown>
+    export type CreateBusinessRuleMutationVariables = {data: BodyType<BusinessRuleInput>}
+
+    /**
+ * @summary Create a rule version and its application condition
+ */
+export const useCreateBusinessRule = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createBusinessRule>>, TError,CreateBusinessRuleMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createBusinessRule>>,
+        TError,
+        CreateBusinessRuleMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreateBusinessRuleMutationOptions(options));
+    }
+
+export const getListPolicyPacksUrl = () => {
+
+
+
+
+  return `/api/policy-packs`
+}
+
+/**
+ * @summary List policy packs
+ */
+export const listPolicyPacks = async ( options?: Parameters<typeof customFetch>[1]): Promise<PolicyPack[]> => {
+
+  return customFetch<PolicyPack[]>(getListPolicyPacksUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListPolicyPacksQueryKey = () => {
+    return [
+    `/api/policy-packs`
+    ] as const;
+    }
+
+
+export const getListPolicyPacksQueryOptions = <TData = Awaited<ReturnType<typeof listPolicyPacks>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListPolicyPacksQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listPolicyPacks>>> = ({ signal }) => listPolicyPacks({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listPolicyPacks>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListPolicyPacksQueryResult = NonNullable<Awaited<ReturnType<typeof listPolicyPacks>>>
+export type ListPolicyPacksQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List policy packs
+ */
+
+export function useListPolicyPacks<TData = Awaited<ReturnType<typeof listPolicyPacks>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listPolicyPacks>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListPolicyPacksQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreatePolicyPackUrl = () => {
+
+
+
+
+  return `/api/policy-packs`
+}
+
+/**
+ * @summary Create a draft policy pack
+ */
+export const createPolicyPack = async (policyPackInput: PolicyPackInput, options?: Parameters<typeof customFetch>[1]): Promise<PolicyPack> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<PolicyPack>(getCreatePolicyPackUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(policyPackInput)
+  }
+);}
+
+
+
+
+
+export const getCreatePolicyPackMutationKey = () => ['createPolicyPack'] as const;
+
+export const getCreatePolicyPackMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createPolicyPack>>, TError,CreatePolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createPolicyPack>>, TError,CreatePolicyPackMutationVariables, TContext> => {
+
+const mutationKey = getCreatePolicyPackMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createPolicyPack>>, CreatePolicyPackMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  createPolicyPack(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreatePolicyPackMutationResult = NonNullable<Awaited<ReturnType<typeof createPolicyPack>>>
+    export type CreatePolicyPackMutationBody = BodyType<PolicyPackInput>
+    export type CreatePolicyPackMutationError = ErrorType<unknown>
+    export type CreatePolicyPackMutationVariables = {data: BodyType<PolicyPackInput>}
+
+    /**
+ * @summary Create a draft policy pack
+ */
+export const useCreatePolicyPack = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createPolicyPack>>, TError,CreatePolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createPolicyPack>>,
+        TError,
+        CreatePolicyPackMutationVariables,
+        TContext
+      > => {
+      return useMutation(getCreatePolicyPackMutationOptions(options));
+    }
+
+export const getAddPolicyPackRuleUrl = (id: string,) => {
+
+
+
+
+  return `/api/policy-packs/${id}/rules`
+}
+
+/**
+ * @summary Add a rule to a mutable policy pack
+ */
+export const addPolicyPackRule = async (id: string,
+    policyPackRuleInput: PolicyPackRuleInput, options?: Parameters<typeof customFetch>[1]): Promise<PolicyPack> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<PolicyPack>(getAddPolicyPackRuleUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(policyPackRuleInput)
+  }
+);}
+
+
+
+
+
+export const getAddPolicyPackRuleMutationKey = () => ['addPolicyPackRule'] as const;
+
+export const getAddPolicyPackRuleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addPolicyPackRule>>, TError,AddPolicyPackRuleMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof addPolicyPackRule>>, TError,AddPolicyPackRuleMutationVariables, TContext> => {
+
+const mutationKey = getAddPolicyPackRuleMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof addPolicyPackRule>>, AddPolicyPackRuleMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  addPolicyPackRule(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AddPolicyPackRuleMutationResult = NonNullable<Awaited<ReturnType<typeof addPolicyPackRule>>>
+    export type AddPolicyPackRuleMutationBody = BodyType<PolicyPackRuleInput>
+    export type AddPolicyPackRuleMutationError = ErrorType<unknown>
+    export type AddPolicyPackRuleMutationVariables = {id: string;data: BodyType<PolicyPackRuleInput>}
+
+    /**
+ * @summary Add a rule to a mutable policy pack
+ */
+export const useAddPolicyPackRule = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addPolicyPackRule>>, TError,AddPolicyPackRuleMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof addPolicyPackRule>>,
+        TError,
+        AddPolicyPackRuleMutationVariables,
+        TContext
+      > => {
+      return useMutation(getAddPolicyPackRuleMutationOptions(options));
+    }
+
+export const getTransitionPolicyPackUrl = (id: string,) => {
+
+
+
+
+  return `/api/policy-packs/${id}/status`
+}
+
+/**
+ * @summary Review, publish, or retire a policy pack
+ */
+export const transitionPolicyPack = async (id: string,
+    policyPackTransition: PolicyPackTransition, options?: Parameters<typeof customFetch>[1]): Promise<PolicyPack> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<PolicyPack>(getTransitionPolicyPackUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(policyPackTransition)
+  }
+);}
+
+
+
+
+
+export const getTransitionPolicyPackMutationKey = () => ['transitionPolicyPack'] as const;
+
+export const getTransitionPolicyPackMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof transitionPolicyPack>>, TError,TransitionPolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof transitionPolicyPack>>, TError,TransitionPolicyPackMutationVariables, TContext> => {
+
+const mutationKey = getTransitionPolicyPackMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof transitionPolicyPack>>, TransitionPolicyPackMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  transitionPolicyPack(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type TransitionPolicyPackMutationResult = NonNullable<Awaited<ReturnType<typeof transitionPolicyPack>>>
+    export type TransitionPolicyPackMutationBody = BodyType<PolicyPackTransition>
+    export type TransitionPolicyPackMutationError = ErrorType<void>
+    export type TransitionPolicyPackMutationVariables = {id: string;data: BodyType<PolicyPackTransition>}
+
+    /**
+ * @summary Review, publish, or retire a policy pack
+ */
+export const useTransitionPolicyPack = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof transitionPolicyPack>>, TError,TransitionPolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof transitionPolicyPack>>,
+        TError,
+        TransitionPolicyPackMutationVariables,
+        TContext
+      > => {
+      return useMutation(getTransitionPolicyPackMutationOptions(options));
+    }
 
 export const getPublishPolicyPackUrl = (id: string,) => {
 

@@ -236,6 +236,397 @@ export const ListActivityResponse = zod.array(ListActivityResponseItem)
 
 
 /**
+ * @summary List legal sources and provisions
+ */
+export const ListLegalSourcesResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "regulationType": zod.string(),
+  "number": zod.string(),
+  "year": zod.number().int(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "effectiveDate": zod.string().nullish(),
+  "expiryDate": zod.string().nullish(),
+  "isBinding": zod.boolean(),
+  "status": zod.string(),
+  "verificationStatus": zod.enum(['UNVERIFIED', 'VERIFIED', 'REJECTED']),
+  "verifiedBy": zod.string().nullish(),
+  "verifiedAt": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "provisions": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "clauseType": zod.string().nullish(),
+  "provisionType": zod.string(),
+  "rawText": zod.string(),
+  "interpretationNote": zod.string().nullish(),
+  "sourceCategory": zod.string()
+}))
+})
+export const ListLegalSourcesResponse = zod.array(ListLegalSourcesResponseItem)
+
+
+/**
+ * @summary Create a legal source
+ */
+
+
+
+export const createLegalSourceBodyYearMin = 1900;
+
+
+
+
+
+
+export const CreateLegalSourceBody = zod.object({
+  "regulationCode": zod.string().min(1),
+  "regulationType": zod.string().min(1),
+  "number": zod.string().min(1),
+  "year": zod.number().int().min(createLegalSourceBodyYearMin),
+  "title": zod.string().min(1),
+  "issuingAuthority": zod.string().min(1),
+  "authorityLevel": zod.number().int().min(1),
+  "effectiveDate": zod.string().optional(),
+  "expiryDate": zod.string().optional(),
+  "isBinding": zod.boolean()
+})
+
+export const CreateLegalSourceResponse = zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "regulationType": zod.string(),
+  "number": zod.string(),
+  "year": zod.number().int(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "effectiveDate": zod.string().nullish(),
+  "expiryDate": zod.string().nullish(),
+  "isBinding": zod.boolean(),
+  "status": zod.string(),
+  "verificationStatus": zod.enum(['UNVERIFIED', 'VERIFIED', 'REJECTED']),
+  "verifiedBy": zod.string().nullish(),
+  "verifiedAt": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "provisions": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "clauseType": zod.string().nullish(),
+  "provisionType": zod.string(),
+  "rawText": zod.string(),
+  "interpretationNote": zod.string().nullish(),
+  "sourceCategory": zod.string()
+}))
+})
+
+
+/**
+ * @summary Update a legal source and verification status
+ */
+export const UpdateLegalSourceParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+
+
+
+export const UpdateLegalSourceBody = zod.object({
+  "title": zod.string().min(1).optional(),
+  "status": zod.string().optional(),
+  "verificationStatus": zod.enum(['UNVERIFIED', 'VERIFIED', 'REJECTED']).optional()
+})
+
+export const UpdateLegalSourceResponse = zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "regulationType": zod.string(),
+  "number": zod.string(),
+  "year": zod.number().int(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "effectiveDate": zod.string().nullish(),
+  "expiryDate": zod.string().nullish(),
+  "isBinding": zod.boolean(),
+  "status": zod.string(),
+  "verificationStatus": zod.enum(['UNVERIFIED', 'VERIFIED', 'REJECTED']),
+  "verifiedBy": zod.string().nullish(),
+  "verifiedAt": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "provisions": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "clauseType": zod.string().nullish(),
+  "provisionType": zod.string(),
+  "rawText": zod.string(),
+  "interpretationNote": zod.string().nullish(),
+  "sourceCategory": zod.string()
+}))
+})
+
+
+/**
+ * @summary Add a provision to a legal source
+ */
+export const CreateProvisionParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+
+
+
+
+
+
+export const CreateProvisionBody = zod.object({
+  "articleNumber": zod.string().min(1),
+  "clauseType": zod.string().optional(),
+  "provisionType": zod.string().min(1),
+  "rawText": zod.string().min(1),
+  "interpretationNote": zod.string().optional(),
+  "sourceCategory": zod.string().min(1)
+})
+
+export const CreateProvisionResponse = zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "clauseType": zod.string().nullish(),
+  "provisionType": zod.string(),
+  "rawText": zod.string(),
+  "interpretationNote": zod.string().nullish(),
+  "sourceCategory": zod.string()
+})
+
+
+/**
+ * @summary List versioned business rules and conditions
+ */
+export const ListBusinessRulesResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "provisionId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleCategory": zod.string(),
+  "defaultValue": zod.unknown().optional(),
+  "valueType": zod.string(),
+  "description": zod.string().nullish(),
+  "allowedReferences": zod.array(zod.string()),
+  "version": zod.number().int(),
+  "isActive": zod.boolean(),
+  "sourceTitle": zod.string(),
+  "articleNumber": zod.string(),
+  "conditions": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "entityType": zod.string().nullish(),
+  "fundingSource": zod.string().nullish(),
+  "procurementMethod": zod.string().nullish(),
+  "packageValueMin": zod.number().nullish(),
+  "packageValueMax": zod.number().nullish(),
+  "scopeType": zod.string().nullish(),
+  "scopeId": zod.string().nullish(),
+  "effectiveDate": zod.string(),
+  "expiryDate": zod.string().nullish()
+}))
+})
+export const ListBusinessRulesResponse = zod.array(ListBusinessRulesResponseItem)
+
+
+/**
+ * @summary Create a rule version and its application condition
+ */
+
+
+
+export const createBusinessRuleBodyPackageValueMinMin = 0;
+
+export const createBusinessRuleBodyPackageValueMaxMin = 0;
+
+
+
+export const CreateBusinessRuleBody = zod.object({
+  "provisionId": zod.string().uuid(),
+  "ruleKey": zod.string().min(1),
+  "ruleCategory": zod.string().min(1),
+  "defaultValue": zod.unknown().optional(),
+  "valueType": zod.enum(['BOOLEAN', 'NUMBER', 'STRING']),
+  "description": zod.string().optional(),
+  "version": zod.number().int().min(1),
+  "entityType": zod.string().optional(),
+  "fundingSource": zod.string().optional(),
+  "procurementMethod": zod.string().optional(),
+  "packageValueMin": zod.number().min(createBusinessRuleBodyPackageValueMinMin).optional(),
+  "packageValueMax": zod.number().min(createBusinessRuleBodyPackageValueMaxMin).optional(),
+  "scopeType": zod.string().optional(),
+  "scopeId": zod.string().optional(),
+  "effectiveDate": zod.string(),
+  "expiryDate": zod.string().optional()
+})
+
+export const CreateBusinessRuleResponse = zod.object({
+  "id": zod.string().uuid(),
+  "provisionId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleCategory": zod.string(),
+  "defaultValue": zod.unknown().optional(),
+  "valueType": zod.string(),
+  "description": zod.string().nullish(),
+  "allowedReferences": zod.array(zod.string()),
+  "version": zod.number().int(),
+  "isActive": zod.boolean(),
+  "sourceTitle": zod.string(),
+  "articleNumber": zod.string(),
+  "conditions": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "entityType": zod.string().nullish(),
+  "fundingSource": zod.string().nullish(),
+  "procurementMethod": zod.string().nullish(),
+  "packageValueMin": zod.number().nullish(),
+  "packageValueMax": zod.number().nullish(),
+  "scopeType": zod.string().nullish(),
+  "scopeId": zod.string().nullish(),
+  "effectiveDate": zod.string(),
+  "expiryDate": zod.string().nullish()
+}))
+})
+
+
+/**
+ * @summary List policy packs
+ */
+export const ListPolicyPacksResponseItem = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "description": zod.string().nullish(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "publishedAt": zod.string().nullish(),
+  "publishedBy": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "rules": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "businessRuleId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "snapshotLocked": zod.boolean()
+}))
+})
+export const ListPolicyPacksResponse = zod.array(ListPolicyPacksResponseItem)
+
+
+/**
+ * @summary Create a draft policy pack
+ */
+
+
+
+
+
+export const CreatePolicyPackBody = zod.object({
+  "packName": zod.string().min(1),
+  "regimeType": zod.string().min(1),
+  "description": zod.string().optional(),
+  "version": zod.string().min(1)
+})
+
+export const CreatePolicyPackResponse = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "description": zod.string().nullish(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "publishedAt": zod.string().nullish(),
+  "publishedBy": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "rules": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "businessRuleId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "snapshotLocked": zod.boolean()
+}))
+})
+
+
+/**
+ * @summary Add a rule to a mutable policy pack
+ */
+export const AddPolicyPackRuleParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const AddPolicyPackRuleBody = zod.object({
+  "businessRuleId": zod.string().uuid(),
+  "ruleConditionId": zod.string().uuid(),
+  "isMandatory": zod.boolean()
+})
+
+export const AddPolicyPackRuleResponse = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "description": zod.string().nullish(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "publishedAt": zod.string().nullish(),
+  "publishedBy": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "rules": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "businessRuleId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "snapshotLocked": zod.boolean()
+}))
+})
+
+
+/**
+ * @summary Review, publish, or retire a policy pack
+ */
+export const TransitionPolicyPackParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+export const TransitionPolicyPackBody = zod.object({
+  "status": zod.enum(['REVIEWED', 'PUBLISHED', 'RETIRED'])
+})
+
+export const TransitionPolicyPackResponse = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "description": zod.string().nullish(),
+  "version": zod.string(),
+  "status": zod.enum(['DRAFT', 'REVIEWED', 'PUBLISHED', 'RETIRED']),
+  "publishedAt": zod.string().nullish(),
+  "publishedBy": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string(),
+  "rules": zod.array(zod.object({
+  "id": zod.string().uuid(),
+  "businessRuleId": zod.string().uuid(),
+  "ruleKey": zod.string(),
+  "ruleVersion": zod.number().int(),
+  "isMandatory": zod.boolean(),
+  "snapshotLocked": zod.boolean()
+}))
+})
+
+
+/**
  * Creates immutable rule snapshots and publishes a reviewed policy pack.
  * @summary Publish a reviewed policy pack
  */

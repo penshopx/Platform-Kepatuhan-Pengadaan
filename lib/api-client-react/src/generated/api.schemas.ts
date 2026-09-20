@@ -121,6 +121,237 @@ export interface Activity {
   tone: string;
 }
 
+export interface Provision {
+  id: string;
+  articleNumber: string;
+  /** @nullable */
+  clauseType?: string | null;
+  provisionType: string;
+  rawText: string;
+  /** @nullable */
+  interpretationNote?: string | null;
+  sourceCategory: string;
+}
+
+export interface ProvisionInput {
+  /** @minLength 1 */
+  articleNumber: string;
+  clauseType?: string;
+  /** @minLength 1 */
+  provisionType: string;
+  /** @minLength 1 */
+  rawText: string;
+  interpretationNote?: string;
+  /** @minLength 1 */
+  sourceCategory: string;
+}
+
+export type LegalSourceVerificationStatus = typeof LegalSourceVerificationStatus[keyof typeof LegalSourceVerificationStatus];
+
+
+export const LegalSourceVerificationStatus = {
+  UNVERIFIED: 'UNVERIFIED',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+} as const;
+
+export interface LegalSource {
+  id: string;
+  regulationCode: string;
+  regulationType: string;
+  number: string;
+  year: number;
+  title: string;
+  issuingAuthority: string;
+  authorityLevel: number;
+  /** @nullable */
+  effectiveDate?: string | null;
+  /** @nullable */
+  expiryDate?: string | null;
+  isBinding: boolean;
+  status: string;
+  verificationStatus: LegalSourceVerificationStatus;
+  /** @nullable */
+  verifiedBy?: string | null;
+  /** @nullable */
+  verifiedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  provisions: Provision[];
+}
+
+export interface LegalSourceInput {
+  /** @minLength 1 */
+  regulationCode: string;
+  /** @minLength 1 */
+  regulationType: string;
+  /** @minLength 1 */
+  number: string;
+  /** @minimum 1900 */
+  year: number;
+  /** @minLength 1 */
+  title: string;
+  /** @minLength 1 */
+  issuingAuthority: string;
+  /** @minimum 1 */
+  authorityLevel: number;
+  effectiveDate?: string;
+  expiryDate?: string;
+  isBinding: boolean;
+}
+
+export type LegalSourceUpdateVerificationStatus = typeof LegalSourceUpdateVerificationStatus[keyof typeof LegalSourceUpdateVerificationStatus];
+
+
+export const LegalSourceUpdateVerificationStatus = {
+  UNVERIFIED: 'UNVERIFIED',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+} as const;
+
+export interface LegalSourceUpdate {
+  /** @minLength 1 */
+  title?: string;
+  status?: string;
+  verificationStatus?: LegalSourceUpdateVerificationStatus;
+}
+
+export interface RuleCondition {
+  id: string;
+  /** @nullable */
+  entityType?: string | null;
+  /** @nullable */
+  fundingSource?: string | null;
+  /** @nullable */
+  procurementMethod?: string | null;
+  /** @nullable */
+  packageValueMin?: number | null;
+  /** @nullable */
+  packageValueMax?: number | null;
+  /** @nullable */
+  scopeType?: string | null;
+  /** @nullable */
+  scopeId?: string | null;
+  effectiveDate: string;
+  /** @nullable */
+  expiryDate?: string | null;
+}
+
+export interface BusinessRule {
+  id: string;
+  provisionId: string;
+  ruleKey: string;
+  ruleCategory: string;
+  defaultValue?: unknown;
+  valueType: string;
+  /** @nullable */
+  description?: string | null;
+  allowedReferences: string[];
+  version: number;
+  isActive: boolean;
+  sourceTitle: string;
+  articleNumber: string;
+  conditions: RuleCondition[];
+}
+
+export type BusinessRuleInputValueType = typeof BusinessRuleInputValueType[keyof typeof BusinessRuleInputValueType];
+
+
+export const BusinessRuleInputValueType = {
+  BOOLEAN: 'BOOLEAN',
+  NUMBER: 'NUMBER',
+  STRING: 'STRING',
+} as const;
+
+export interface BusinessRuleInput {
+  provisionId: string;
+  /** @minLength 1 */
+  ruleKey: string;
+  /** @minLength 1 */
+  ruleCategory: string;
+  defaultValue?: unknown;
+  valueType: BusinessRuleInputValueType;
+  description?: string;
+  /** @minimum 1 */
+  version: number;
+  entityType?: string;
+  fundingSource?: string;
+  procurementMethod?: string;
+  /** @minimum 0 */
+  packageValueMin?: number;
+  /** @minimum 0 */
+  packageValueMax?: number;
+  scopeType?: string;
+  scopeId?: string;
+  effectiveDate: string;
+  expiryDate?: string;
+}
+
+export interface PolicyPackRuleSummary {
+  id: string;
+  businessRuleId: string;
+  ruleKey: string;
+  ruleVersion: number;
+  isMandatory: boolean;
+  snapshotLocked: boolean;
+}
+
+export type PolicyPackStatus = typeof PolicyPackStatus[keyof typeof PolicyPackStatus];
+
+
+export const PolicyPackStatus = {
+  DRAFT: 'DRAFT',
+  REVIEWED: 'REVIEWED',
+  PUBLISHED: 'PUBLISHED',
+  RETIRED: 'RETIRED',
+} as const;
+
+export interface PolicyPack {
+  id: string;
+  packName: string;
+  regimeType: string;
+  /** @nullable */
+  description?: string | null;
+  version: string;
+  status: PolicyPackStatus;
+  /** @nullable */
+  publishedAt?: string | null;
+  /** @nullable */
+  publishedBy?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rules: PolicyPackRuleSummary[];
+}
+
+export interface PolicyPackInput {
+  /** @minLength 1 */
+  packName: string;
+  /** @minLength 1 */
+  regimeType: string;
+  description?: string;
+  /** @minLength 1 */
+  version: string;
+}
+
+export interface PolicyPackRuleInput {
+  businessRuleId: string;
+  ruleConditionId: string;
+  isMandatory: boolean;
+}
+
+export type PolicyPackTransitionStatus = typeof PolicyPackTransitionStatus[keyof typeof PolicyPackTransitionStatus];
+
+
+export const PolicyPackTransitionStatus = {
+  REVIEWED: 'REVIEWED',
+  PUBLISHED: 'PUBLISHED',
+  RETIRED: 'RETIRED',
+} as const;
+
+export interface PolicyPackTransition {
+  status: PolicyPackTransitionStatus;
+}
+
 export type PublishedPolicyPackStatus = typeof PublishedPolicyPackStatus[keyof typeof PublishedPolicyPackStatus];
 
 

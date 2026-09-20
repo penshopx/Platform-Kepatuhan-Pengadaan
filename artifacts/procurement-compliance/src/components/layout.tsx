@@ -21,6 +21,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     { href: "/reviews", label: "e-Purchasing", icon: CheckSquare },
     { href: "/regulations", label: "Regulasi", icon: BookOpen },
     { href: "/activity", label: "Aktivitas", icon: ActivitySquare },
+    { href: "/legal-admin", label: "Admin Hukum", icon: ShieldCheck },
   ];
 
   return (

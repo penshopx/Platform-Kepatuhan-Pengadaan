@@ -7,6 +7,7 @@
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
+    "test:decision-routes": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/decision-routes.test.ts",
     "test:policy-pack-comparison": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/policy-pack-comparison.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:policy-engine": "pnpm --filter scripts exec tsx ../artifacts/api-server/src/tests/policy-engine.test.ts"

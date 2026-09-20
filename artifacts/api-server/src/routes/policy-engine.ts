@@ -31,8 +31,6 @@ import {
 } from "../lib/policy-engine";
 import { authenticateSignedActor } from "../lib/signed-actor";
 
-const router: IRouter = Router();
-
 type StoredDecisionSnapshot = {
   policyPack: unknown;
   evaluation: {
@@ -41,6 +39,9 @@ type StoredDecisionSnapshot = {
     rules: unknown;
   };
 };
+
+export function createPolicyEngineRouter(database: typeof db = db): IRouter {
+const router: IRouter = Router();
 
 function presentStoredDecision(decision: {
   id: string;
@@ -61,7 +62,7 @@ function presentStoredDecision(decision: {
 }
 
 router.get("/published-policy-packs", async (_req, res): Promise<void> => {
-  const packs = await db
+  const packs = await database
     .select({
       id: policyPacksTable.id,
       packName: policyPacksTable.packName,
@@ -99,7 +100,7 @@ router.get("/decisions", async (req, res): Promise<void> => {
     return;
   }
 
-  const decisions = await db
+  const decisions = await database
     .select({
       id: decisionReferencesTable.id,
       snapshot: decisionReferencesTable.snapshot,
@@ -127,7 +128,7 @@ router.get("/decisions/:decisionReference", async (req, res): Promise<void> => {
     return;
   }
 
-  const [decision] = await db
+  const [decision] = await database
     .select({
       id: decisionReferencesTable.id,
       snapshot: decisionReferencesTable.snapshot,
@@ -163,7 +164,7 @@ router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {
   }
 
   try {
-    const published = await db.transaction(async (tx) => {
+    const published = await database.transaction(async (tx) => {
       const [pack] = await tx
         .select()
         .from(policyPacksTable)
@@ -307,7 +308,7 @@ router.post("/rule-evaluations", async (req, res): Promise<void> => {
   }
 
   try {
-    const result = await db.transaction(async (tx) => {
+    const result = await database.transaction(async (tx) => {
       const [pack] = await tx
         .select()
         .from(policyPacksTable)
@@ -401,4 +402,7 @@ router.post("/rule-evaluations", async (req, res): Promise<void> => {
   }
 });
 
-export default router;
+return router;
+}
+
+export default createPolicyEngineRouter();

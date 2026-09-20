@@ -20,6 +20,10 @@ tags:
     description: Compliance review checklists
   - name: activity
     description: Workspace activity timeline
+  - name: policy-packs
+    description: Versioned compliance policy packs
+  - name: evaluations
+    description: Explainable compliance rule evaluations
 paths:
   /healthz:
     get:
@@ -183,6 +187,55 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Activity"
+  /policy-packs/{id}/publish:
+    post:
+      operationId: publishPolicyPack
+      tags: [policy-packs]
+      summary: Publish a reviewed policy pack
+      description: Creates immutable rule snapshots and publishes a reviewed policy pack.
+      parameters:
+        - $ref: "#/components/parameters/PolicyPackId"
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/ActorRole"
+        - $ref: "#/components/parameters/ActorTimestamp"
+      security:
+        - ActorSignature: []
+      responses:
+        "200":
+          description: Published policy pack
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishedPolicyPack"
+        "400":
+          description: Policy pack cannot be published
+        "401":
+          description: Missing or invalid signed publisher identity
+        "404":
+          description: Policy pack not found
+  /rule-evaluations:
+    post:
+      operationId: evaluateRules
+      tags: [evaluations]
+      summary: Evaluate a package against a published policy pack
+      description: Evaluates immutable rule snapshots and stores an immutable decision reference.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuleEvaluationInput"
+      responses:
+        "201":
+          description: Explainable, reproducible compliance decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleEvaluationResult"
+        "400":
+          description: Invalid evaluation input or formula
+        "404":
+          description: Published policy pack not found
 components:
   parameters:
     PackageId:
@@ -191,6 +244,39 @@ components:
       required: true
       schema:
         type: integer
+    PolicyPackId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ActorId:
+      name: x-actor-id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ActorRole:
+      name: x-actor-role
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [POLICY_PUBLISHER, ADMIN]
+    ActorTimestamp:
+      name: x-actor-timestamp
+      in: header
+      required: true
+      schema:
+        type: string
+  securitySchemes:
+    ActorSignature:
+      type: apiKey
+      in: header
+      name: x-actor-signature
+      description: HMAC-SHA256 of timestamp, method, path, actor ID, and actor role using the server session secret.
   schemas:
     HealthStatus:
       type: object
@@ -420,4 +506,176 @@ components:
           type: string
         tone:
           type: string
+    PublishedPolicyPack:
+      type: object
+      required: [id, packName, regimeType, version, status, publishedAt, publishedBy, ruleCount]
+      properties:
+        id:
+          type: string
+          format: uuid
+        packName:
+          type: string
+        regimeType:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [PUBLISHED]
+        publishedAt:
+          type: string
+          format: date-time
+        publishedBy:
+          type: string
+        ruleCount:
+          type: integer
+          minimum: 1
+    RuleEvaluationInput:
+      type: object
+      required: [entityType, entityId, policyPackId, context]
+      properties:
+        entityType:
+          type: string
+          minLength: 1
+        entityId:
+          type: string
+          minLength: 1
+        policyPackId:
+          type: string
+          format: uuid
+        context:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: number
+              - type: string
+              - type: boolean
+              - type: "null"
+    RuleEvaluationResult:
+      type: object
+      required: [decisionReference, policyPack, input, output, rules]
+      properties:
+        decisionReference:
+          type: string
+          format: uuid
+        policyPack:
+          $ref: "#/components/schemas/EvaluatedPolicyPack"
+        input:
+          $ref: "#/components/schemas/RuleEvaluationInput"
+        output:
+          $ref: "#/components/schemas/EvaluationSummary"
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleExplanation"
+    EvaluatedPolicyPack:
+      type: object
+      required: [id, name, version, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum: [PUBLISHED]
+    EvaluationSummary:
+      type: object
+      required: [status, passed, failed, mandatoryFailed, notApplicable]
+      properties:
+        status:
+          type: string
+          enum: [COMPLIANT, NON_COMPLIANT, NOT_APPLICABLE]
+        passed:
+          type: integer
+        failed:
+          type: integer
+        mandatoryFailed:
+          type: integer
+        notApplicable:
+          type: integer
+    RuleExplanation:
+      type: object
+      required: [rule, provision, source, verificationStatus, input, output]
+      properties:
+        rule:
+          $ref: "#/components/schemas/EvaluatedRule"
+        provision:
+          $ref: "#/components/schemas/EvaluatedProvision"
+        source:
+          $ref: "#/components/schemas/EvaluatedSource"
+        verificationStatus:
+          type: string
+        input:
+          type: object
+          additionalProperties: true
+        output:
+          $ref: "#/components/schemas/RuleOutput"
+    EvaluatedRule:
+      type: object
+      required: [id, key, category, valueType, mandatory]
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+        category:
+          type: string
+        description:
+          type: ["string", "null"]
+        valueType:
+          type: string
+        mandatory:
+          type: boolean
+    EvaluatedProvision:
+      type: object
+      required: [id, articleNumber, provisionType, rawText]
+      properties:
+        id:
+          type: string
+          format: uuid
+        articleNumber:
+          type: string
+        provisionType:
+          type: string
+        rawText:
+          type: string
+    EvaluatedSource:
+      type: object
+      required: [id, regulationCode, title, issuingAuthority, authorityLevel, isBinding]
+      properties:
+        id:
+          type: string
+          format: uuid
+        regulationCode:
+          type: string
+        title:
+          type: string
+        issuingAuthority:
+          type: string
+        authorityLevel:
+          type: integer
+        isBinding:
+          type: boolean
+    RuleOutput:
+      type: object
+      required: [status, value, referencedPaths]
+      properties:
+        status:
+          type: string
+          enum: [PASS, FAIL, NOT_APPLICABLE]
+        value:
+          oneOf:
+            - type: number
+            - type: string
+            - type: boolean
+            - type: "null"
+        referencedPaths:
+          type: array
+          items:
+            type: string
 

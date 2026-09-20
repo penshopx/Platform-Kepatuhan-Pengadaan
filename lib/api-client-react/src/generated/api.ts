@@ -29,8 +29,11 @@ import type {
   PackageUpdate,
   ProcurementPackage,
   ProcurementPackageDetail,
+  PublishedPolicyPack,
   Regulation,
-  ReviewCompletionInput
+  ReviewCompletionInput,
+  RuleEvaluationInput,
+  RuleEvaluationResult
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -871,4 +874,168 @@ export function useListActivity<TData = Awaited<ReturnType<typeof listActivity>>
 
 
 
+
+export const getPublishPolicyPackUrl = (id: string,) => {
+
+
+
+
+  return `/api/policy-packs/${id}/publish`
+}
+
+/**
+ * Creates immutable rule snapshots and publishes a reviewed policy pack.
+ * @summary Publish a reviewed policy pack
+ */
+export const publishPolicyPack = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<PublishedPolicyPack> => {
+
+  return customFetch<PublishedPolicyPack>(getPublishPolicyPackUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getPublishPolicyPackMutationKey = () => ['publishPolicyPack'] as const;
+
+export const getPublishPolicyPackMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof publishPolicyPack>>, TError,PublishPolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof publishPolicyPack>>, TError,PublishPolicyPackMutationVariables, TContext> => {
+
+const mutationKey = getPublishPolicyPackMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof publishPolicyPack>>, PublishPolicyPackMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  publishPolicyPack(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PublishPolicyPackMutationResult = NonNullable<Awaited<ReturnType<typeof publishPolicyPack>>>
+
+    export type PublishPolicyPackMutationError = ErrorType<void>
+    export type PublishPolicyPackMutationVariables = {id: string}
+
+    /**
+ * @summary Publish a reviewed policy pack
+ */
+export const usePublishPolicyPack = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof publishPolicyPack>>, TError,PublishPolicyPackMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof publishPolicyPack>>,
+        TError,
+        PublishPolicyPackMutationVariables,
+        TContext
+      > => {
+      return useMutation(getPublishPolicyPackMutationOptions(options));
+    }
+
+export const getEvaluateRulesUrl = () => {
+
+
+
+
+  return `/api/rule-evaluations`
+}
+
+/**
+ * Evaluates immutable rule snapshots and stores an immutable decision reference.
+ * @summary Evaluate a package against a published policy pack
+ */
+export const evaluateRules = async (ruleEvaluationInput: RuleEvaluationInput, options?: Parameters<typeof customFetch>[1]): Promise<RuleEvaluationResult> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<RuleEvaluationResult>(getEvaluateRulesUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(ruleEvaluationInput)
+  }
+);}
+
+
+
+
+
+export const getEvaluateRulesMutationKey = () => ['evaluateRules'] as const;
+
+export const getEvaluateRulesMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof evaluateRules>>, TError,EvaluateRulesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof evaluateRules>>, TError,EvaluateRulesMutationVariables, TContext> => {
+
+const mutationKey = getEvaluateRulesMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof evaluateRules>>, EvaluateRulesMutationVariables> = (props) => {
+          const {data} = props ?? {};
+
+          return  evaluateRules(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type EvaluateRulesMutationResult = NonNullable<Awaited<ReturnType<typeof evaluateRules>>>
+    export type EvaluateRulesMutationBody = BodyType<RuleEvaluationInput>
+    export type EvaluateRulesMutationError = ErrorType<void>
+    export type EvaluateRulesMutationVariables = {data: BodyType<RuleEvaluationInput>}
+
+    /**
+ * @summary Evaluate a package against a published policy pack
+ */
+export const useEvaluateRules = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof evaluateRules>>, TError,EvaluateRulesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof evaluateRules>>,
+        TError,
+        EvaluateRulesMutationVariables,
+        TContext
+      > => {
+      return useMutation(getEvaluateRulesMutationOptions(options));
+    }
 

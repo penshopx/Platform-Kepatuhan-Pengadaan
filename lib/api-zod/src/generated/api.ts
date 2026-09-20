@@ -235,3 +235,109 @@ export const ListActivityResponseItem = zod.object({
 export const ListActivityResponse = zod.array(ListActivityResponseItem)
 
 
+/**
+ * Creates immutable rule snapshots and publishes a reviewed policy pack.
+ * @summary Publish a reviewed policy pack
+ */
+export const PublishPolicyPackParams = zod.object({
+  "id": zod.coerce.string().uuid()
+})
+
+
+
+
+export const PublishPolicyPackHeader = zod.object({
+  "x-actor-id": zod.string().min(1),
+  "x-actor-role": zod.enum(['POLICY_PUBLISHER', 'ADMIN']),
+  "x-actor-timestamp": zod.string()
+})
+
+
+
+
+export const PublishPolicyPackResponse = zod.object({
+  "id": zod.string().uuid(),
+  "packName": zod.string(),
+  "regimeType": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['PUBLISHED']),
+  "publishedAt": zod.coerce.date(),
+  "publishedBy": zod.string(),
+  "ruleCount": zod.number().int().min(1)
+})
+
+
+/**
+ * Evaluates immutable rule snapshots and stores an immutable decision reference.
+ * @summary Evaluate a package against a published policy pack
+ */
+
+
+
+
+export const EvaluateRulesBody = zod.object({
+  "entityType": zod.string().min(1),
+  "entityId": zod.string().min(1),
+  "policyPackId": zod.string().uuid(),
+  "context": zod.record(zod.string(), zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]))
+})
+
+
+
+
+
+export const EvaluateRulesResponse = zod.object({
+  "decisionReference": zod.string().uuid(),
+  "policyPack": zod.object({
+  "id": zod.string().uuid(),
+  "name": zod.string(),
+  "version": zod.string(),
+  "status": zod.enum(['PUBLISHED'])
+}),
+  "input": zod.object({
+  "entityType": zod.string().min(1),
+  "entityId": zod.string().min(1),
+  "policyPackId": zod.string().uuid(),
+  "context": zod.record(zod.string(), zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]))
+}),
+  "output": zod.object({
+  "status": zod.enum(['COMPLIANT', 'NON_COMPLIANT', 'NOT_APPLICABLE']),
+  "passed": zod.number().int(),
+  "failed": zod.number().int(),
+  "mandatoryFailed": zod.number().int(),
+  "notApplicable": zod.number().int()
+}),
+  "rules": zod.array(zod.object({
+  "rule": zod.object({
+  "id": zod.string().uuid(),
+  "key": zod.string(),
+  "category": zod.string(),
+  "description": zod.string().nullish(),
+  "valueType": zod.string(),
+  "mandatory": zod.boolean()
+}),
+  "provision": zod.object({
+  "id": zod.string().uuid(),
+  "articleNumber": zod.string(),
+  "provisionType": zod.string(),
+  "rawText": zod.string()
+}),
+  "source": zod.object({
+  "id": zod.string().uuid(),
+  "regulationCode": zod.string(),
+  "title": zod.string(),
+  "issuingAuthority": zod.string(),
+  "authorityLevel": zod.number().int(),
+  "isBinding": zod.boolean()
+}),
+  "verificationStatus": zod.string(),
+  "input": zod.record(zod.string(), zod.unknown()),
+  "output": zod.object({
+  "status": zod.enum(['PASS', 'FAIL', 'NOT_APPLICABLE']),
+  "value": zod.union([zod.number(),zod.string(),zod.boolean(),zod.null()]),
+  "referencedPaths": zod.array(zod.string())
+})
+}))
+})
+
+

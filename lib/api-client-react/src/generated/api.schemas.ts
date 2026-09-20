@@ -121,6 +121,139 @@ export interface Activity {
   tone: string;
 }
 
+export type PublishedPolicyPackStatus = typeof PublishedPolicyPackStatus[keyof typeof PublishedPolicyPackStatus];
+
+
+export const PublishedPolicyPackStatus = {
+  PUBLISHED: 'PUBLISHED',
+} as const;
+
+export interface PublishedPolicyPack {
+  id: string;
+  packName: string;
+  regimeType: string;
+  version: string;
+  status: PublishedPolicyPackStatus;
+  publishedAt: string;
+  publishedBy: string;
+  /** @minimum 1 */
+  ruleCount: number;
+}
+
+export type RuleEvaluationInputContext = {[key: string]: number | string | boolean | null};
+
+export interface RuleEvaluationInput {
+  /** @minLength 1 */
+  entityType: string;
+  /** @minLength 1 */
+  entityId: string;
+  policyPackId: string;
+  context: RuleEvaluationInputContext;
+}
+
+export type EvaluatedPolicyPackStatus = typeof EvaluatedPolicyPackStatus[keyof typeof EvaluatedPolicyPackStatus];
+
+
+export const EvaluatedPolicyPackStatus = {
+  PUBLISHED: 'PUBLISHED',
+} as const;
+
+export interface EvaluatedPolicyPack {
+  id: string;
+  name: string;
+  version: string;
+  status: EvaluatedPolicyPackStatus;
+}
+
+export type EvaluationSummaryStatus = typeof EvaluationSummaryStatus[keyof typeof EvaluationSummaryStatus];
+
+
+export const EvaluationSummaryStatus = {
+  COMPLIANT: 'COMPLIANT',
+  NON_COMPLIANT: 'NON_COMPLIANT',
+  NOT_APPLICABLE: 'NOT_APPLICABLE',
+} as const;
+
+export interface EvaluationSummary {
+  status: EvaluationSummaryStatus;
+  passed: number;
+  failed: number;
+  mandatoryFailed: number;
+  notApplicable: number;
+}
+
+export interface EvaluatedRule {
+  id: string;
+  key: string;
+  category: string;
+  /** @nullable */
+  description?: string | null;
+  valueType: string;
+  mandatory: boolean;
+}
+
+export interface EvaluatedProvision {
+  id: string;
+  articleNumber: string;
+  provisionType: string;
+  rawText: string;
+}
+
+export interface EvaluatedSource {
+  id: string;
+  regulationCode: string;
+  title: string;
+  issuingAuthority: string;
+  authorityLevel: number;
+  isBinding: boolean;
+}
+
+export type RuleOutputStatus = typeof RuleOutputStatus[keyof typeof RuleOutputStatus];
+
+
+export const RuleOutputStatus = {
+  PASS: 'PASS',
+  FAIL: 'FAIL',
+  NOT_APPLICABLE: 'NOT_APPLICABLE',
+} as const;
+
+export interface RuleOutput {
+  status: RuleOutputStatus;
+  value: number | string | boolean | null;
+  referencedPaths: string[];
+}
+
+export type RuleExplanationInput = { [key: string]: unknown };
+
+export interface RuleExplanation {
+  rule: EvaluatedRule;
+  provision: EvaluatedProvision;
+  source: EvaluatedSource;
+  verificationStatus: string;
+  input: RuleExplanationInput;
+  output: RuleOutput;
+}
+
+export interface RuleEvaluationResult {
+  decisionReference: string;
+  policyPack: EvaluatedPolicyPack;
+  input: RuleEvaluationInput;
+  output: EvaluationSummary;
+  rules: RuleExplanation[];
+}
+
+export type ActorIdParameter = string;
+
+export type ActorRoleParameter = typeof ActorRoleParameter[keyof typeof ActorRoleParameter];
+
+
+export const ActorRoleParameter = {
+  POLICY_PUBLISHER: 'POLICY_PUBLISHER',
+  ADMIN: 'ADMIN',
+} as const;
+
+export type ActorTimestampParameter = string;
+
 export type ListPackagesParams = {
 status?: string;
 search?: string;

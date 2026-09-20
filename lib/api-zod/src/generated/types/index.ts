@@ -7,9 +7,19 @@
  */
 
 export * from './activity';
+export * from './actorIdParameter';
+export * from './actorRoleParameter';
+export * from './actorTimestampParameter';
 export * from './budgetBucket';
 export * from './dashboard';
 export * from './epurchasingReview';
+export * from './evaluatedPolicyPack';
+export * from './evaluatedPolicyPackStatus';
+export * from './evaluatedProvision';
+export * from './evaluatedRule';
+export * from './evaluatedSource';
+export * from './evaluationSummary';
+export * from './evaluationSummaryStatus';
 export * from './healthStatus';
 export * from './listPackagesParams';
 export * from './packageDocument';
@@ -18,6 +28,15 @@ export * from './packageStep';
 export * from './packageUpdate';
 export * from './procurementPackage';
 export * from './procurementPackageDetail';
+export * from './publishedPolicyPack';
+export * from './publishedPolicyPackStatus';
 export * from './regulation';
 export * from './reviewCompletionInput';
 export * from './reviewItem';
+export * from './ruleEvaluationInput';
+export * from './ruleEvaluationInputContext';
+export * from './ruleEvaluationResult';
+export * from './ruleExplanation';
+export * from './ruleExplanationInput';
+export * from './ruleOutput';
+export * from './ruleOutputStatus';

@@ -1,0 +1,464 @@
+Saya mencatat kelima keputusan final tersebut sebagai **constraint implementasi yang mengikat**. Berikut ringkasan implikasi teknisnya sebelum beralih ke task baru:
+
+| # | Keputusan | Implikasi Teknis |
+|---|-----------|------------------|
+| 1 | Authorization decision | Middleware baru: cek `actorId === userId` ∨ `orgId match + role=admin` ∨ `role=auditor`. Response 403 jika tidak memenuhi. |
+| 2 | Reproducibility 3-field | Response `GET /api/decisions/{id}` menambahkan `historicallyReproducible`, `eligibleForNewEvaluation`, `currentPackStatus`. Logic: RETIRED → `historicallyReproducible=true`, `eligibleForNewEvaluation=false`. |
+| 3 | List decision berhalaman | `GET /api/decisions` dengan pagination, filter, dan **tidak** menyertakan `evaluatedByProfile`. Hanya `evaluatedBy` (Clerk user ID) yang dikembalikan. |
+| 4 | Clerk user ID sebagai text | Ubah kolom `actorId`, `verifiedBy`, `publishedBy`, `evaluatedBy` dari `uuid` menjadi `text`. Migrasi: `ALTER TABLE ... ALTER COLUMN ... TYPE text USING column::text`. |
+| 5 | Audit context dalam transaksi | Middleware tidak lagi `set_config` di pool connection. Handler harus: `BEGIN` → `set_config` → mutasi → `COMMIT`. Atau gunakan `db.transaction(async tx => { await tx.execute(setAuditContextSQL); ... })`. |
+
+Catatan untuk keputusan #4: karena data seed dan audit log lama mungkin sudah terisi dengan nilai UUID-valid, migrasi harus menggunakan `USING column::text` agar tidak gagal konversi.
+
+---
+
+## 🎯 PANDUAN DESAIN: Tampilkan Alasan Kepatuhan pada Detail Paket
+
+### 1. Alur Pengguna (User Journey)
+
+```
+1. Pengguna membuka halaman detail paket pengadaan
+2. Sistem menampilkan ringkasan paket + tombol "Evaluasi Kepatuhan"
+3. Pengguna memilih policy pack yang akan digunakan (dropdown: hanya PUBLISHED)
+4. Sistem mengirim POST /api/rule-evaluations dengan konteks paket
+5. UI menampilkan:
+   - Status evaluasi (loading → success → error)
+   - Ringkasan: X aturan PASSED, Y FAILED, Z NOT_APPLICABLE
+   - Daftar rule dengan penjelasan terstruktur
+   - Decision reference ID dengan tombol salin
+6. Jika policy pack tidak tersedia → tampilkan pesan + opsi pilih pack lain
+```
+
+### 2. Struktur Komponen
+
+```
+artifacts/procurement-compliance/src/
+├── routes/
+│   └── packages/
+│       └── $packageId.tsx                    # Halaman detail paket
+└── components/
+    └── compliance/
+        ├── CompliancePanel.tsx               # Panel utama kepatuhan
+        ├── PolicyPackSelector.tsx            # Dropdown pilih policy pack
+        ├── EvaluationSummary.tsx             # Ringkasan PASSED/FAILED/N/A
+        ├── RuleEvaluationList.tsx            # Daftar rule + penjelasan
+        ├── RuleEvaluationCard.tsx            # Kartu per-rule
+        ├── ExplanationRenderer.tsx           # Render template+data
+        ├── DecisionReferenceBadge.tsx        # Badge ID + tombol salin
+        └── EvaluationStates.tsx              # Loading/Error/Empty states
+```
+
+### 3. Spesifikasi Komponen Kunci
+
+#### A. `CompliancePanel.tsx` (Kontainer Utama)
+
+```tsx
+interface CompliancePanelProps {
+  packageId: string;
+  packageContext: PackageContext; // Nilai paket, metode, TKDN, dll
+}
+
+export function CompliancePanel({ packageId, packageContext }) {
+  const [selectedPackId, setSelectedPackId] = useState<string | null>(null);
+  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [state, setState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  const evaluate = async () => {
+    if (!selectedPackId) return;
+    setState('loading');
+    setError(null);
+    try {
+      const result = await apiClient.postRuleEvaluations({
+        packageId,
+        policyPackId: selectedPackId,
+        context: packageContext
+      });
+      setEvaluation(result);
+      setState('success');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Evaluasi gagal');
+      setState('error');
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Evaluasi Kepatuhan</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <PolicyPackSelector
+          value={selectedPackId}
+          onChange={setSelectedPackId}
+          disabled={state === 'loading'}
+        />
+
+        {state === 'idle' && (
+          <Button onClick={evaluate} disabled={!selectedPackId}>
+            Mulai Evaluasi
+          </Button>
+        )}
+
+        {state === 'loading' && <EvaluationLoading />}
+        {state === 'error' && <EvaluationError message={error} onRetry={evaluate} />}
+        {state === 'success' && evaluation && (
+          <>
+            <EvaluationSummary results={evaluation.results} />
+            <DecisionReferenceBadge id={evaluation.decisionReferenceId} />
+            <RuleEvaluationList results={evaluation.results} />
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+```
+
+#### B. `PolicyPackSelector.tsx`
+
+```tsx
+export function PolicyPackSelector({ value, onChange, disabled }) {
+  const { data: packs, isLoading } = useQuery({
+    queryKey: ['published-policy-packs'],
+    queryFn: () => apiClient.getPublishedPolicyPacks()
+  });
+
+  if (isLoading) return <Skeleton className="h-10" />;
+
+  if (!packs || packs.length === 0) {
+    return (
+      <Alert variant="warning">
+        <AlertTitle>Tidak ada policy pack tersedia</AlertTitle>
+        <AlertDescription>
+          Hubungi admin hukum untuk menerbitkan policy pack terlebih dahulu.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <Select value={value} onValueChange={onChange} disabled={disabled}>
+      <SelectTrigger>
+        <SelectValue placeholder="Pilih policy pack..." />
+      </SelectTrigger>
+      <SelectContent>
+        {packs.map(pack => (
+          <SelectItem key={pack.id} value={pack.id}>
+            {pack.packName} v{pack.version} ({pack.regimeType})
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+```
+
+#### C. `EvaluationSummary.tsx`
+
+```tsx
+export function EvaluationSummary({ results }: { results: RuleEvaluationResult[] }) {
+  const counts = {
+    PASSED: results.filter(r => r.status === 'PASSED').length,
+    FAILED: results.filter(r => r.status === 'FAILED').length,
+    NOT_APPLICABLE: results.filter(r => r.status === 'NOT_APPLICABLE').length,
+    ERROR: results.filter(r => r.status === 'ERROR').length,
+    APPLICABLE: results.filter(r => r.status === 'APPLICABLE').length
+  };
+
+  const overallStatus = counts.FAILED > 0 || counts.ERROR > 0 
+    ? 'warning' 
+    : 'success';
+
+  return (
+    <div className="grid grid-cols-5 gap-2">
+      <StatBadge label="Lulus" count={counts.PASSED} variant="success" />
+      <StatBadge label="Gagal" count={counts.FAILED} variant="destructive" />
+      <StatBadge label="Tidak Berlaku" count={counts.NOT_APPLICABLE} variant="muted" />
+      <StatBadge label="Berlaku" count={counts.APPLICABLE} variant="info" />
+      <StatBadge label="Error" count={counts.ERROR} variant="warning" />
+    </div>
+  );
+}
+```
+
+#### D. `RuleEvaluationCard.tsx`
+
+```tsx
+export function RuleEvaluationCard({ result }: { result: RuleEvaluationResult }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const statusVariant = {
+    PASSED: 'success',
+    FAILED: 'destructive',
+    NOT_APPLICABLE: 'muted',
+    APPLICABLE: 'info',
+    ERROR: 'warning'
+  }[result.status];
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Badge variant={statusVariant}>{result.status}</Badge>
+          <code className="text-sm font-mono">{result.ruleKey}</code>
+        </div>
+        <Button 
+          variant="ghost" 
+          size="sm"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? 'Sembunyikan' : 'Detail'}
+        </Button>
+      </CardHeader>
+      
+      {expanded && (
+        <CardContent className="space-y-3">
+          {/* Penjelasan terstruktur */}
+          <ExplanationRenderer explanation={result.explanation} />
+
+          {/* Metadata aturan */}
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <span className="font-medium">Pasal:</span>{' '}
+              {result.provision.articleNumber}
+              {result.provision.clauseType && ` (${result.provision.clauseType})`}
+            </div>
+            <div>
+              <span className="font-medium">Sumber:</span>{' '}
+              {result.source.regulationCode}
+            </div>
+            <div>
+              <span className="font-medium">Status Verifikasi:</span>{' '}
+              <VerificationBadge status={result.source.verificationStatus} />
+            </div>
+            <div>
+              <span className="font-medium">Mengikat:</span>{' '}
+              {result.source.isBinding ? 'Ya' : 'Tidak'}
+            </div>
+          </div>
+
+          {/* Override jika ada */}
+          {result.overrideApplied && (
+            <Alert>
+              <AlertTitle>Override Diterapkan</AlertTitle>
+              <AlertDescription>
+                Aturan ini di-override untuk scope {result.overrideApplied.scopeType}
+                {result.overrideApplied.scopeId && ` (${result.overrideApplied.scopeId})`}
+                dengan prioritas {result.overrideApplied.priority}.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Input yang dirujuk */}
+          <div>
+            <span className="text-sm font-medium">Input yang digunakan:</span>
+            <div className="flex flex-wrap gap-1 mt-1">
+              {result.referencedInputs.map(input => (
+                <Badge key={input} variant="outline">{input}</Badge>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+```
+
+#### E. `ExplanationRenderer.tsx`
+
+```tsx
+const templates: Record<string, (data: any) => ReactNode> = {
+  rule_passed_with_tkdn: (data) => (
+    <div className="space-y-1">
+      <p>Aturan <code>{data.ruleKey}</code> dari Pasal {data.articleNumber} {data.regulationCode} <strong className="text-green-700">terpenuhi</strong>.</p>
+      <p>TKDN minimal: <strong>{data.requiredValue}{data.unit}</strong></p>
+      <p>TKDN aktual: <strong>{data.actualValue}{data.unit}</strong></p>
+    </div>
+  ),
+  rule_failed_with_tkdn: (data) => (
+    <div className="space-y-1">
+      <p>Aturan <code>{data.ruleKey}</code> dari Pasal {data.articleNumber} {data.regulationCode} <strong className="text-red-700">tidak terpenuhi</strong>.</p>
+      <p>TKDN minimal: <strong>{data.requiredValue}{data.unit}</strong></p>
+      <p>TKDN aktual: <strong>{data.actualValue}{data.unit}</strong></p>
+    </div>
+  ),
+  threshold_exceeded: (data) => (
+    <div className="space-y-1">
+      <p>Nilai paket <strong>Rp {data.packageValue.toLocaleString('id-ID')}</strong> melebihi ambang batas <strong>Rp {data.threshold.toLocaleString('id-ID')}</strong>.</p>
+      <p>Metode <em>{data.prohibitedMethod}</em> tidak dapat digunakan. Gunakan <em>{data.requiredMethod}</em>.</p>
+    </div>
+  ),
+  threshold_within_limit: (data) => (
+    <div className="space-y-1">
+      <p>Nilai paket <strong>Rp {data.packageValue.toLocaleString('id-ID')}</strong> berada dalam ambang batas <strong>Rp {data.threshold.toLocaleString('id-ID')}</strong>.</p>
+      <p>Metode <em>{data.allowedMethod}</em> dapat digunakan.</p>
+    </div>
+  ),
+  method_not_applicable: (data) => (
+    <div>
+      <p>Aturan ini tidak berlaku karena metode pengadaan <em>{data.procurementMethod}</em> tidak termasuk dalam cakupan aturan.</p>
+    </div>
+  ),
+  formula_evaluated: (data) => (
+    <div className="space-y-1">
+      <p>Formula dari Pasal {data.articleNumber} {data.regulationCode} telah dievaluasi.</p>
+      <p>Hasil: <strong>{data.resultValue} {data.unit}</strong></p>
+      {data.threshold && (
+        <p>Ambang batas: {data.threshold} {data.unit}</p>
+      )}
+    </div>
+  ),
+  override_applied: (data) => (
+    <div className="space-y-1">
+      <p>Aturan nasional dari {data.nationalSource} di-override oleh aturan {data.overrideScope}.</p>
+      <p>Dasar: {data.justificationSource}</p>
+    </div>
+  )
+};
+
+export function ExplanationRenderer({ explanation }: { explanation: Explanation }) {
+  const Template = templates[explanation.template];
+  
+  if (!Template) {
+    // Fallback: tampilkan humanReadable jika template tidak dikenal
+    return (
+      <div className="text-sm text-muted-foreground">
+        <p className="italic">Template tidak dikenal: <code>{explanation.template}</code></p>
+        <p className="mt-1">{explanation.humanReadable}</p>
+      </div>
+    );
+  }
+
+  return <div className="text-sm">{Template(explanation.data)}</div>;
+}
+```
+
+#### F. `DecisionReferenceBadge.tsx`
+
+```tsx
+export function DecisionReferenceBadge({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(id);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex items-center gap-2 p-2 bg-muted rounded">
+      <span className="text-xs font-medium text-muted-foreground">Decision Reference:</span>
+      <code className="text-xs font-mono flex-1 truncate">{id}</code>
+      <Button 
+        variant="ghost" 
+        size="sm"
+        onClick={handleCopy}
+        aria-label="Salin decision reference"
+      >
+        {copied ? <CheckIcon className="h-4 w-4" /> : <CopyIcon className="h-4 w-4" />}
+      </Button>
+      <Button variant="outline" size="sm" asChild>
+        <a href={`/decisions/${id}`} target="_blank" rel="noopener noreferrer">
+          Buka Detail
+        </a>
+      </Button>
+    </div>
+  );
+}
+```
+
+#### G. `EvaluationStates.tsx`
+
+```tsx
+export function EvaluationLoading() {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Loader2Icon className="h-4 w-4 animate-spin" />
+        <span>Mengevaluasi kepatuhan...</span>
+      </div>
+      <Skeleton className="h-20" />
+      <Skeleton className="h-20" />
+      <Skeleton className="h-20" />
+    </div>
+  );
+}
+
+export function EvaluationError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <Alert variant="destructive">
+      <AlertTitle>Evaluasi Gagal</AlertTitle>
+      <AlertDescription className="space-y-2">
+        <p>{message}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Coba Lagi
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+export function EvaluationEmpty() {
+  return (
+    <div className="text-center py-8 text-muted-foreground">
+      <p>Belum ada evaluasi kepatuhan untuk paket ini.</p>
+      <p className="text-sm mt-1">Pilih policy pack dan mulai evaluasi.</p>
+    </div>
+  );
+}
+```
+
+### 4. Integrasi API Client
+
+File `lib/api-client-react/src/generated/api.ts` perlu memiliki method:
+
+```typescript
+// POST /api/rule-evaluations
+postRuleEvaluations(body: {
+  packageId: string;
+  policyPackId: string;
+  context: PackageContext;
+}): Promise<EvaluationResponse>;
+
+// GET /api/policy-packs?status=PUBLISHED
+getPublishedPolicyPacks(): Promise<PolicyPackSummary[]>;
+```
+
+### 5. Penanganan Kasus Kritis
+
+| Kasus | Penanganan |
+|-------|------------|
+| Tidak ada policy pack PUBLISHED | `PolicyPackSelector` tampilkan Alert, tombol evaluasi disabled |
+| Evaluasi gagal karena konteks tidak lengkap | Tampilkan error spesifik dari API (field apa yang hilang) |
+| Policy pack di-retire saat evaluasi berjalan | API return 404, UI tampilkan "Policy pack tidak lagi tersedia" |
+| Decision reference gagal dibuat | API return 500, UI tampilkan error + opsi coba lagi |
+| Network error | Retry button + pesan jelas |
+| Rule dengan status ERROR | Tampilkan di card terpisah dengan pesan error dari formula evaluator |
+
+### 6. Invariant yang Harus Dijaga
+
+1. **UI tidak boleh memodifikasi aturan** — hanya membaca hasil evaluasi
+2. **Decision reference ID harus ditampilkan persis seperti dari API** — jangan di-format atau di-truncate
+3. **ExplanationRenderer tidak boleh render HTML mentah** — hanya template terstruktur
+4. **Loading state harus jelas** — pengguna harus tahu sistem sedang bekerja
+5. **Error harus actionable** — selalu sertakan tombol retry atau saran perbaikan
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Halaman detail paket memuat `CompliancePanel`
+- [ ] `PolicyPackSelector` hanya menampilkan pack PUBLISHED
+- [ ] POST /api/rule-evaluations dipanggil dengan konteks yang benar
+- [ ] `EvaluationSummary` menampilkan 5 status dengan benar
+- [ ] `RuleEvaluationCard` menampilkan penjelasan terstruktur
+- [ ] `ExplanationRenderer` menangani semua template yang didefinisikan
+- [ ] `DecisionReferenceBadge` menampilkan ID + tombol salin + link detail
+- [ ] Loading, error, empty state ditangani
+- [ ] Policy pack tidak tersedia ditangani dengan jelas
+- [ ] Typecheck lulus
+- [ ] Tidak ada HTML/Markdown mentah dari API yang di-render
+
+Silakan lanjutkan implementasi. Saya siap membantu jika ada inkonsistensi antara spesifikasi OpenAPI dan implementasi aktual, atau jika template explanation baru perlu ditambahkan berdasarkan hasil evaluasi nyata.

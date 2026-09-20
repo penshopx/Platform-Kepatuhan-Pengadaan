@@ -1,0 +1,578 @@
+Berikut panduan desain untuk **integration test endpoint keputusan audit** yang memastikan snapshot dibaca tanpa evaluasi ulang dan error handling tetap jelas.
+
+---
+
+## 🧪 STRATEGI TESTING
+
+### Pendekatan: HTTP Integration Test dengan Pinned Connection
+
+Karena endpoint ini melibatkan **read operation** (bukan mutasi), kita bisa menggunakan pendekatan yang lebih sederhana daripada test mutasi:
+
+1. **Setup data test** langsung di database (bisa pakai transaksi + rollback, atau database test terisolasi)
+2. **HTTP request** melalui supertest ke endpoint aktual
+3. **Verifikasi response** dan **side effects** (tidak ada decision reference baru)
+
+---
+
+## 📦 STRUKTUR FILE TEST
+
+```
+artifacts/api-server/src/tests/
+├── decision-endpoint-integration.test.ts
+└── helpers/
+    ├── test-db.ts          # Pinned connection helper
+    ├── test-auth.ts        # Mock Clerk untuk test
+    └── fixtures/
+        ├── decisions.ts    # Decision reference fixtures
+        └── policy-packs.ts # Policy pack fixtures
+```
+
+---
+
+## 🔧 HELPER: PINNED CONNECTION
+
+### `helpers/test-db.ts`
+
+```typescript
+import { Pool, PoolClient } from 'pg';
+import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
+import * as schema from '@procurement/db/schema';
+
+let pool: Pool;
+let client: PoolClient;
+let testDb: NodePgDatabase<typeof schema>;
+
+export async function setupTestDatabase() {
+  pool = new Pool({ 
+    connectionString: process.env.TEST_DATABASE_URL || process.env.DATABASE_URL 
+  });
+}
+
+export async function beginTransaction() {
+  client = await pool.connect();
+  await client.query('BEGIN');
+  testDb = drizzle(client, { schema });
+  return testDb;
+}
+
+export async function rollbackTransaction() {
+  if (client) {
+    await client.query('ROLLBACK');
+    client.release();
+    client = null as any;
+  }
+}
+
+export async function teardownTestDatabase() {
+  if (pool) {
+    await pool.end();
+  }
+}
+
+export function getTestDb() {
+  if (!testDb) {
+    throw new Error('Test database not initialized. Call beginTransaction() first.');
+  }
+  return testDb;
+}
+```
+
+---
+
+## 🔐 HELPER: MOCK AUTH
+
+### `helpers/test-auth.ts`
+
+```typescript
+export const TEST_USERS = {
+  ADMIN: 'user_test_admin_123',
+  AUDITOR: 'user_test_auditor_456',
+  UNAUTHORIZED: 'user_test_unauthorized_789'
+};
+
+export function testAuthHeader(userId: string, reason: string = 'Test automation') {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('testAuthHeader should only be used in test environment');
+  }
+  
+  return {
+    'X-Test-User-Id': userId,
+    'X-Audit-Reason': reason
+  };
+}
+```
+
+---
+
+## 📝 FIXTURE DATA
+
+### `helpers/fixtures/decisions.ts`
+
+```typescript
+import type { DecisionReference } from '@procurement/db/schema';
+
+export const testDecision: Partial<DecisionReference> = {
+  entityType: 'PACKAGE',
+  entityId: 'pkg-test-001',
+  policyPackId: 'pack-test-001',
+  policyPackVersion: '1.0.0',
+  evaluationInput: {
+    context: {
+      package_value: 450000000,
+      procurement_method: 'TENDER',
+      entity_type: 'KONSTRUKSI'
+    }
+  },
+  evaluationResult: {
+    results: [
+      {
+        ruleKey: 'test_threshold_rule',
+        status: 'PASSED',
+        value: 45,
+        explanation: {
+          template: 'rule_passed_with_tkdn',
+          data: {
+            ruleKey: 'test_threshold_rule',
+            articleNumber: '1',
+            regulationCode: 'TEST-REG-2025',
+            requiredValue: 40,
+            actualValue: 45,
+            unit: 'percent'
+          },
+          humanReadable: 'Test rule passed'
+        }
+      }
+    ]
+  },
+  snapshot: {
+    rules: [
+      {
+        ruleId: 'rule-test-001',
+        ruleKey: 'test_threshold_rule',
+        snapshotValue: { value: 40 },
+        snapshotFormulaAst: null,
+        source: {
+          id: 'source-test-001',
+          regulationCode: 'TEST-REG-2025',
+          verificationStatus: 'VERIFIED'
+        },
+        provision: {
+          id: 'prov-test-001',
+          articleNumber: '1'
+        }
+      }
+    ],
+    evaluatorVersion: '1.0.0'
+  },
+  actorType: 'USER'
+};
+
+export const testDecision2: Partial<DecisionReference> = {
+  ...testDecision,
+  entityId: 'pkg-test-001',
+  evaluationInput: {
+    context: {
+      package_value: 500000000,
+      procurement_method: 'TENDER',
+      entity_type: 'KONSTRUKSI'
+    }
+  }
+};
+
+export const testDecision3: Partial<DecisionReference> = {
+  ...testDecision,
+  entityId: 'pkg-test-002',
+  evaluationInput: {
+    context: {
+      package_value: 300000000,
+      procurement_method: 'DIRECT',
+      entity_type: 'BARANG'
+    }
+  }
+};
+```
+
+---
+
+## 🧪 TEST CASES
+
+### `decision-endpoint-integration.test.ts`
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import request from 'supertest';
+import { eq, and, desc } from 'drizzle-orm';
+import { app } from '../index';
+import { decisionReferences, policyPacks } from '@procurement/db/schema';
+import { 
+  setupTestDatabase, 
+  beginTransaction, 
+  rollbackTransaction, 
+  teardownTestDatabase,
+  getTestDb 
+} from './helpers/test-db';
+import { testAuthHeader, TEST_USERS } from './helpers/test-auth';
+import { testDecision, testDecision2, testDecision3 } from './helpers/fixtures/decisions';
+import { publishedPolicyPack } from './helpers/fixtures/policy-packs';
+
+describe('Decision Endpoint Integration Tests', () => {
+  let testDb: any;
+  let decisionId1: string;
+  let decisionId2: string;
+  let decisionId3: string;
+
+  beforeAll(async () => {
+    await setupTestDatabase();
+  });
+
+  afterAll(async () => {
+    await teardownTestDatabase();
+  });
+
+  beforeEach(async () => {
+    testDb = await beginTransaction();
+
+    // Setup: Buat policy pack PUBLISHED
+    const [pack] = await testDb.insert(policyPacks).values({
+      ...publishedPolicyPack,
+      status: 'PUBLISHED',
+      publishedAt: new Date(),
+      publishedBy: TEST_USERS.ADMIN
+    }).returning();
+
+    // Setup: Buat beberapa decision references dengan timestamp berbeda
+    const [dec1] = await testDb.insert(decisionReferences).values({
+      ...testDecision,
+      policyPackId: pack.id,
+      evaluatedAt: new Date('2025-09-21T10:00:00Z'),
+      evaluatedBy: TEST_USERS.ADMIN
+    }).returning();
+    decisionId1 = dec1.id;
+
+    // Tunggu 1ms agar timestamp berbeda
+    await new Promise(resolve => setTimeout(resolve, 1));
+
+    const [dec2] = await testDb.insert(decisionReferences).values({
+      ...testDecision2,
+      policyPackId: pack.id,
+      evaluatedAt: new Date('2025-09-21T11:00:00Z'),
+      evaluatedBy: TEST_USERS.ADMIN
+    }).returning();
+    decisionId2 = dec2.id;
+
+    await new Promise(resolve => setTimeout(resolve, 1));
+
+    const [dec3] = await testDb.insert(decisionReferences).values({
+      ...testDecision3,
+      policyPackId: pack.id,
+      evaluatedAt: new Date('2025-09-21T12:00:00Z'),
+      evaluatedBy: TEST_USERS.ADMIN
+    }).returning();
+    decisionId3 = dec3.id;
+  });
+
+  afterEach(async () => {
+    await rollbackTransaction();
+  });
+
+  // ============================================
+  // TEST GROUP 1: GET /api/decisions/:id
+  // ============================================
+  describe('GET /api/decisions/:id', () => {
+    it('should return complete snapshot for valid decision ID', async () => {
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBe(decisionId1);
+      expect(res.body.entityType).toBe('PACKAGE');
+      expect(res.body.entityId).toBe('pkg-test-001');
+      
+      // Verifikasi snapshot lengkap
+      expect(res.body.snapshot).toBeDefined();
+      expect(res.body.snapshot.rules).toBeDefined();
+      expect(res.body.snapshot.rules.length).toBeGreaterThan(0);
+      
+      // Verifikasi evaluation input
+      expect(res.body.evaluationInput).toBeDefined();
+      expect(res.body.evaluationInput.context.package_value).toBe(450000000);
+      
+      // Verifikasi evaluation result
+      expect(res.body.evaluationResult).toBeDefined();
+      expect(res.body.evaluationResult.results).toBeDefined();
+      expect(res.body.evaluationResult.results.length).toBeGreaterThan(0);
+      
+      // Verifikasi metadata
+      expect(res.body.policyPack).toBeDefined();
+      expect(res.body.policyPack.version).toBe('1.0.0');
+      expect(res.body.evaluatedAt).toBeDefined();
+      expect(res.body.evaluatedBy).toBe(TEST_USERS.ADMIN);
+    });
+
+    it('should return 400 for invalid UUID format', async () => {
+      const res = await request(app)
+        .get('/api/decisions/invalid-uuid-format')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Invalid UUID');
+    });
+
+    it('should return 404 for non-existent decision', async () => {
+      const nonExistentId = '00000000-0000-0000-0000-000000000000';
+      
+      const res = await request(app)
+        .get(`/api/decisions/${nonExistentId}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('not found');
+    });
+
+    it('should NOT create new decision reference (read-only)', async () => {
+      // Hitung decision references sebelum request
+      const beforeCount = await testDb.query.decisionReferences.findMany();
+      const beforeLength = beforeCount.length;
+
+      // GET request
+      await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      // Hitung decision references setelah request
+      const afterCount = await testDb.query.decisionReferences.findMany();
+      const afterLength = afterCount.length;
+
+      // Verifikasi tidak ada decision reference baru
+      expect(afterLength).toBe(beforeLength);
+    });
+
+    it('should include reproducibility check', async () => {
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.reproducibilityCheck).toBeDefined();
+      expect(res.body.reproducibilityCheck.historicallyReproducible).toBe(true);
+      expect(res.body.reproducibilityCheck.currentPackStatus).toBe('PUBLISHED');
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 2: GET /api/decisions (list with filters)
+  // ============================================
+  describe('GET /api/decisions', () => {
+    it('should return paginated list of decisions', async () => {
+      const res = await request(app)
+        .get('/api/decisions')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toBeDefined();
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.data.length).toBeGreaterThan(0);
+      
+      // Verifikasi pagination metadata
+      expect(res.body.pagination).toBeDefined();
+      expect(res.body.pagination.total).toBeGreaterThan(0);
+    });
+
+    it('should filter by entityType and entityId', async () => {
+      const res = await request(app)
+        .get('/api/decisions?entityType=PACKAGE&entityId=pkg-test-001')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(2); // decisionId1 dan decisionId2
+      
+      // Verifikasi semua hasil memiliki entityType dan entityId yang benar
+      for (const decision of res.body.data) {
+        expect(decision.entityType).toBe('PACKAGE');
+        expect(decision.entityId).toBe('pkg-test-001');
+      }
+    });
+
+    it('should return results ordered by evaluatedAt descending (newest first)', async () => {
+      const res = await request(app)
+        .get('/api/decisions?entityType=PACKAGE&entityId=pkg-test-001')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(2);
+      
+      // Verifikasi urutan: decisionId2 (11:00) harus lebih dulu dari decisionId1 (10:00)
+      expect(res.body.data[0].id).toBe(decisionId2);
+      expect(res.body.data[1].id).toBe(decisionId1);
+      
+      // Verifikasi timestamp
+      const firstDate = new Date(res.body.data[0].evaluatedAt);
+      const secondDate = new Date(res.body.data[1].evaluatedAt);
+      expect(firstDate.getTime()).toBeGreaterThan(secondDate.getTime());
+    });
+
+    it('should filter by policyPackId', async () => {
+      const res = await request(app)
+        .get(`/api/decisions?policyPackId=${publishedPolicyPack.id}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(3); // Semua decision menggunakan pack yang sama
+    });
+
+    it('should filter by date range', async () => {
+      const res = await request(app)
+        .get('/api/decisions?startDate=2025-09-21T10:30:00Z&endDate=2025-09-21T11:30:00Z')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(1); // Hanya decisionId2 (11:00)
+      expect(res.body.data[0].id).toBe(decisionId2);
+    });
+
+    it('should NOT include evaluatedByProfile in list (only in detail)', async () => {
+      const res = await request(app)
+        .get('/api/decisions')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      
+      // Verifikasi evaluatedByProfile tidak ada di list
+      for (const decision of res.body.data) {
+        expect(decision.evaluatedByProfile).toBeUndefined();
+        // Tapi evaluatedBy (user ID) harus ada
+        expect(decision.evaluatedBy).toBeDefined();
+      }
+    });
+
+    it('should support pagination with limit and offset', async () => {
+      const res = await request(app)
+        .get('/api/decisions?limit=2&offset=0')
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.length).toBe(2);
+      expect(res.body.pagination.limit).toBe(2);
+      expect(res.body.pagination.offset).toBe(0);
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 3: Authorization
+  // ============================================
+  describe('Authorization', () => {
+    it('should allow actor who created the decision to access it', async () => {
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN)); // ADMIN adalah evaluatedBy
+
+      expect(res.status).toBe(200);
+    });
+
+    it('should allow auditor to access any decision', async () => {
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.AUDITOR)); // AUDITOR bukan evaluatedBy
+
+      expect(res.status).toBe(200);
+    });
+
+    it('should deny unauthorized user from accessing decision', async () => {
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.UNAUTHORIZED));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain('not authorized');
+    });
+  });
+
+  // ============================================
+  // TEST GROUP 4: Snapshot Immutability Verification
+  // ============================================
+  describe('Snapshot Immutability', () => {
+    it('should return exact snapshot without modification', async () => {
+      // Ambil decision langsung dari database
+      const [dbDecision] = await testDb.query.decisionReferences.findMany({
+        where: eq(decisionReferences.id, decisionId1)
+      });
+
+      // Ambil decision via API
+      const res = await request(app)
+        .get(`/api/decisions/${decisionId1}`)
+        .set(testAuthHeader(TEST_USERS.ADMIN));
+
+      expect(res.status).toBe(200);
+
+      // Verifikasi snapshot dari API sama dengan database
+      expect(JSON.stringify(res.body.snapshot)).toBe(JSON.stringify(dbDecision.snapshot));
+      expect(JSON.stringify(res.body.evaluationInput)).toBe(JSON.stringify(dbDecision.evaluationInput));
+      expect(JSON.stringify(res.body.evaluationResult)).toBe(JSON.stringify(dbDecision.evaluationResult));
+    });
+  });
+});
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Test file dibuat di `artifacts/api-server/src/tests/decision-endpoint-integration.test.ts`
+- [ ] Helper pinned connection diimplementasikan
+- [ ] Helper mock auth diimplementasikan
+- [ ] Fixture data fiktif (TEST-REG-2025, bukan klaim legal konkret)
+- [ ] Test GET /api/decisions/:id dengan snapshot lengkap
+- [ ] Test 400 untuk UUID tidak valid
+- [ ] Test 404 untuk decision tidak ditemukan
+- [ ] Test verifikasi tidak ada decision reference baru (read-only)
+- [ ] Test reproducibility check
+- [ ] Test GET /api/decisions dengan filter entityType/entityId
+- [ ] Test urutan descending (newest first)
+- [ ] Test filter by policyPackId
+- [ ] Test filter by date range
+- [ ] Test pagination
+- [ ] Test evaluatedByProfile tidak ada di list
+- [ ] Test authorization (actor, auditor, unauthorized)
+- [ ] Test snapshot immutability (API response = database)
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+
+---
+
+## 🚀 CARA MENJALANKAN TEST
+
+```bash
+cd artifacts/api-server
+
+# Jalankan test ini saja
+npm test -- decision-endpoint-integration.test.ts
+
+# Jalankan dengan coverage
+npm run test:coverage -- decision-endpoint-integration.test.ts
+
+# Jalankan dalam watch mode
+npm run test:watch -- decision-endpoint-integration.test.ts
+```
+
+---
+
+## ⚠️ INVARIANT YANG DIJAGA
+
+1. **Read-only**: GET request tidak membuat decision reference baru
+2. **Snapshot utuh**: Response mencakup snapshot lengkap tanpa modifikasi
+3. **Error handling jelas**: 400 untuk UUID invalid, 404 untuk not found
+4. **Urutan konsisten**: Riwayat entitas terurut dari terbaru
+5. **Authorization ketat**: Hanya actor/auditor yang bisa akses
+6. **Fixture fiktif**: Tidak ada klaim legal konkret
+7. **Tipe OpenAPI**: Import dari generated types
+
+---
+
+## 📊 STATUS
+
+- ✅ Task #15 sedang berjalan tanpa interferensi
+- ✅ Workflow stabil
+- ✅ Panduan test siap diimplementasikan
+
+Silakan lanjutkan Task #15. Jika ada inkonsistensi antara panduan ini dan implementasi aktual (misal: nama endpoint berbeda, atau struktur response tidak sesuai OpenAPI), saya siap membantu menyesuaikan.

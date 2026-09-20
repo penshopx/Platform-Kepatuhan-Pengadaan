@@ -8,6 +8,23 @@ import {
 
 export const EVALUATOR_VERSION = "dre-ast-v1";
 
+export function unverifiedSourcePublicationError(
+  sources: Array<{
+    regulationCode: string;
+    verificationStatus: string;
+  }>,
+) {
+  const unverified = sources
+    .filter(({ verificationStatus }) => verificationStatus !== "VERIFIED")
+    .map(
+      ({ regulationCode, verificationStatus }) =>
+        `${regulationCode} (${verificationStatus})`,
+    );
+  return unverified.length
+    ? `Publikasi gagal: sumber belum VERIFIED — ${[...new Set(unverified)].join(", ")}`
+    : null;
+}
+
 export type RuleSnapshot = {
   rule: {
     id: string;
@@ -57,6 +74,10 @@ type EvaluationInput = {
 
 export function snapshotHash(snapshot: Omit<RuleSnapshot, "hash">): string {
   return createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
+}
+
+export function createRuleSnapshot(content: Omit<RuleSnapshot, "hash">) {
+  return { ...content, hash: snapshotHash(content) };
 }
 
 export function evaluateRuleSnapshot(

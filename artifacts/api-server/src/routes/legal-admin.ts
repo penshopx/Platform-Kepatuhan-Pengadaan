@@ -32,7 +32,10 @@ import {
   UpdateLegalSourceParams,
   UpdateLegalSourceResponse,
 } from "@workspace/api-zod";
-import { snapshotHash } from "../lib/policy-engine";
+import {
+  createRuleSnapshot,
+  unverifiedSourcePublicationError,
+} from "../lib/policy-engine";
 import { requireAdmin } from "../middlewares/require-admin";
 
 const router: IRouter = Router();
@@ -439,14 +442,10 @@ router.patch("/policy-packs/:id/status", requireAdmin, async (req, res): Promise
           )
           .where(eq(policyPackRulesTable.policyPackId, pack.id));
         if (!rows.length) throw new Error("Policy pack belum memiliki aturan");
-        const unverified = rows
-          .filter(({ source }) => source.verificationStatus !== "VERIFIED")
-          .map(({ source }) => `${source.regulationCode} (${source.verificationStatus})`);
-        if (unverified.length) {
-          throw new Error(
-            `Publikasi gagal: sumber belum VERIFIED — ${[...new Set(unverified)].join(", ")}`,
-          );
-        }
+        const verificationError = unverifiedSourcePublicationError(
+          rows.map(({ source }) => source),
+        );
+        if (verificationError) throw new Error(verificationError);
         for (const row of rows) {
           const content = {
             rule: {
@@ -493,7 +492,7 @@ router.patch("/policy-packs/:id/status", requireAdmin, async (req, res): Promise
           await tx
             .update(policyPackRulesTable)
             .set({
-              snapshot: { ...content, hash: snapshotHash(content) },
+              snapshot: createRuleSnapshot(content),
               snapshotTakenAt: now,
             })
             .where(eq(policyPackRulesTable.id, row.packRule.id));

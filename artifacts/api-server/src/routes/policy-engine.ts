@@ -20,9 +20,10 @@ import {
 } from "@workspace/api-zod";
 import {
   EVALUATOR_VERSION,
+  createRuleSnapshot,
   evaluateRuleSnapshot,
-  snapshotHash,
   type RuleSnapshot,
+  unverifiedSourcePublicationError,
 } from "../lib/policy-engine";
 import { authenticateSignedActor } from "../lib/signed-actor";
 
@@ -116,17 +117,10 @@ router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {
         )
         .where(eq(policyPackRulesTable.policyPackId, pack.id));
       if (!rows.length) throw new Error("Policy pack belum memiliki aturan");
-      const unverified = rows
-        .filter(({ source }) => source.verificationStatus !== "VERIFIED")
-        .map(
-          ({ source }) =>
-            `${source.regulationCode} (${source.verificationStatus})`,
-        );
-      if (unverified.length) {
-        throw new Error(
-          `Publikasi gagal: sumber belum VERIFIED — ${[...new Set(unverified)].join(", ")}`,
-        );
-      }
+      const verificationError = unverifiedSourcePublicationError(
+        rows.map(({ source }) => source),
+      );
+      if (verificationError) throw new Error(verificationError);
 
       await tx.execute(
         sql`select set_audit_context(${actor.id}, 'USER', ${actor.role}, 'Publish reviewed policy pack')`,
@@ -178,7 +172,7 @@ router.post("/policy-packs/:id/publish", async (req, res): Promise<void> => {
         await tx
           .update(policyPackRulesTable)
           .set({
-            snapshot: { ...content, hash: snapshotHash(content) },
+            snapshot: createRuleSnapshot(content),
             snapshotTakenAt,
           })
           .where(eq(policyPackRulesTable.id, row.packRule.id));

@@ -112,10 +112,17 @@ BEGIN
       RAISE EXCEPTION 'A retired policy pack is immutable';
     END IF;
 
+    IF NEW.status IS DISTINCT FROM OLD.status
+       AND NOT (
+         (OLD.status = 'DRAFT' AND NEW.status = 'REVIEWED')
+         OR (OLD.status = 'REVIEWED' AND NEW.status = 'PUBLISHED')
+         OR (OLD.status = 'PUBLISHED' AND NEW.status = 'RETIRED')
+       ) THEN
+      RAISE EXCEPTION 'Invalid policy pack status transition from % to %',
+        OLD.status, NEW.status;
+    END IF;
+
     IF OLD.status = 'PUBLISHED' THEN
-      IF NEW.status <> 'RETIRED' THEN
-        RAISE EXCEPTION 'A published policy pack can only transition to RETIRED';
-      END IF;
       IF ROW(
         OLD.pack_name, OLD.regime_type, OLD.description, OLD.version,
         OLD.published_at, OLD.published_by, OLD.created_at

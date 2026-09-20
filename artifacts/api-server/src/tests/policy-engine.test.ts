@@ -3,10 +3,25 @@ import { randomUUID } from "node:crypto";
 import { pool } from "@workspace/db";
 import {
   EVALUATOR_VERSION,
+  createRuleSnapshot,
   evaluateRuleSnapshot,
   snapshotHash,
   type RuleSnapshot,
+  unverifiedSourcePublicationError,
 } from "../lib/policy-engine";
+
+async function expectDatabaseRejection(
+  query: () => Promise<unknown>,
+  message: RegExp,
+) {
+  await client.query("SAVEPOINT expected_rejection");
+  try {
+    await assert.rejects(query, message);
+  } finally {
+    await client.query("ROLLBACK TO SAVEPOINT expected_rejection");
+    await client.query("RELEASE SAVEPOINT expected_rejection");
+  }
+}
 
 const client = await pool.connect();
 
@@ -69,6 +84,15 @@ try {
     [pack.rows[0].id, rule.rows[0].id, condition.rows[0].id],
   );
 
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_packs SET status = 'PUBLISHED' WHERE id = $1",
+        [pack.rows[0].id],
+      ),
+    /Invalid policy pack status transition from DRAFT to PUBLISHED/,
+  );
+
   const content: Omit<RuleSnapshot, "hash"> = {
     rule: {
       id: rule.rows[0].id,
@@ -109,7 +133,7 @@ try {
       rawText: "Package value must meet threshold",
     },
   };
-  const snapshot: RuleSnapshot = { ...content, hash: snapshotHash(content) };
+  const snapshot: RuleSnapshot = createRuleSnapshot(content);
   await client.query(
     "SELECT set_audit_context('test', 'SYSTEM', 'TEST', 'Publish test pack')",
   );
@@ -123,11 +147,66 @@ try {
     "UPDATE policy_packs SET status = 'REVIEWED' WHERE id = $1",
     [pack.rows[0].id],
   );
+
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_packs SET status = 'DRAFT' WHERE id = $1",
+        [pack.rows[0].id],
+      ),
+    /Invalid policy pack status transition from REVIEWED to DRAFT/,
+  );
+
+  await client.query(
+    "UPDATE legal_sources SET verification_status = 'PENDING' WHERE id = $1",
+    [source.rows[0].id],
+  );
+  assert.equal(
+    unverifiedSourcePublicationError([
+      {
+        regulationCode: `POLICY-ENGINE-${suffix}`,
+        verificationStatus: "PENDING",
+      },
+    ]),
+    `Publikasi gagal: sumber belum VERIFIED — POLICY-ENGINE-${suffix} (PENDING)`,
+  );
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        `UPDATE policy_packs
+         SET status = 'PUBLISHED', published_at = now(), published_by = 'test'
+         WHERE id = $1`,
+        [pack.rows[0].id],
+      ),
+    /Binding rules must reference VERIFIED legal sources before publication/,
+  );
+  await client.query(
+    "UPDATE legal_sources SET verification_status = 'VERIFIED' WHERE id = $1",
+    [source.rows[0].id],
+  );
+
   await client.query(
     `UPDATE policy_packs
      SET status = 'PUBLISHED', published_at = now(), published_by = 'test'
      WHERE id = $1`,
     [pack.rows[0].id],
+  );
+
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_packs SET status = 'REVIEWED' WHERE id = $1",
+        [pack.rows[0].id],
+      ),
+    /Invalid policy pack status transition from PUBLISHED to REVIEWED/,
+  );
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_pack_rules SET snapshot = '{}'::jsonb WHERE id = $1",
+        [packRule.rows[0].id],
+      ),
+    /Rules of published or retired policy packs are immutable/,
   );
 
   const stored = await client.query<{ snapshot: RuleSnapshot }>(
@@ -190,6 +269,43 @@ try {
     [decision.rows[0].id],
   );
   assert.equal(persisted.rows[0].evaluator_version, EVALUATOR_VERSION);
+
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE decision_references SET evaluator_version = 'tampered' WHERE id = $1",
+        [decision.rows[0].id],
+      ),
+    /Decision references are immutable/,
+  );
+  await expectDatabaseRejection(
+    () =>
+      client.query("DELETE FROM decision_references WHERE id = $1", [
+        decision.rows[0].id,
+      ]),
+    /Decision references are immutable/,
+  );
+
+  await client.query(
+    "UPDATE policy_packs SET status = 'RETIRED' WHERE id = $1",
+    [pack.rows[0].id],
+  );
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_packs SET description = 'tampered' WHERE id = $1",
+        [pack.rows[0].id],
+      ),
+    /A retired policy pack is immutable/,
+  );
+  await expectDatabaseRejection(
+    () =>
+      client.query(
+        "UPDATE policy_pack_rules SET snapshot_taken_at = now() WHERE id = $1",
+        [packRule.rows[0].id],
+      ),
+    /Rules of published or retired policy packs are immutable/,
+  );
 
   console.log("Policy engine integration tests passed");
 } finally {

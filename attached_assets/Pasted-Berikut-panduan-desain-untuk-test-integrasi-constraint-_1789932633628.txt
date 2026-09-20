@@ -1,0 +1,384 @@
+Berikut panduan desain untuk **test integrasi constraint unik policy pack lintas regime**.
+
+---
+
+## 🧪 STRATEGI TESTING
+
+### Pendekatan: Database Test Terisolasi + Cleanup
+
+Karena test ini melibatkan **mutasi** (INSERT policy pack) dan perlu memverifikasi constraint database, pendekatan yang paling aman:
+
+1. Gunakan database test terpisah (`TEST_DATABASE_URL`)
+2. Data di-commit (bukan dalam transaksi) agar constraint database benar-benar teruji
+3. Cleanup setelah setiap test atau setelah suite
+
+**Mengapa bukan transaksi + ROLLBACK:**
+- Constraint `UNIQUE` di PostgreSQL baru teruji saat `INSERT` di-commit
+- Dalam transaksi yang belum commit, constraint bisa berperilaku berbeda
+- Kita ingin menguji constraint **sebagaimana production**
+
+---
+
+## 📝 TEST CASES
+
+### `policy-pack-unique-constraint.test.ts`
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import request from 'supertest';
+import { Pool } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import * as schema from '@procurement/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { app } from '../index';
+import { policyPacks } from '@procurement/db/schema';
+import { testAuthHeader, TEST_USERS } from './helpers/test-auth';
+
+describe('Policy Pack Unique Constraint (packName + regimeType + version)', () => {
+  let testPool: Pool;
+  let testDb: any;
+  const createdPackIds: string[] = [];
+
+  beforeAll(async () => {
+    // Gunakan database test terisolasi
+    testPool = new Pool({ 
+      connectionString: process.env.TEST_DATABASE_URL 
+    });
+    testDb = drizzle(testPool, { schema });
+    
+    // Inject testDb ke aplikasi agar handler menggunakan database yang sama
+    app.set('db', testDb);
+  });
+
+  afterAll(async () => {
+    // Cleanup semua data test
+    for (const id of createdPackIds) {
+      try {
+        await testDb.delete(policyPacks).where(eq(policyPacks.id, id));
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    await testPool.end();
+  });
+
+  beforeEach(async () => {
+    // Cleanup sebelum setiap test
+    await testDb.delete(policyPacks).where(
+      eq(policyPacks.packName, 'TEST-CROSS-REGIME')
+    );
+  });
+
+  // ============================================
+  // TEST 1: Nama + Versi Sama, Regime Berbeda → BERHASIL
+  // ============================================
+  it('should allow same name and version on different regimes', async () => {
+    // Buat pack pertama: GOVERNMENT_CENTRAL
+    const res1 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        description: 'Test pack for central government',
+        reason: 'Test: create central pack'
+      });
+
+    expect(res1.status).toBe(201);
+    expect(res1.body.id).toBeDefined();
+    createdPackIds.push(res1.body.id);
+
+    // Buat pack kedua: GOVERNMENT_REGIONAL (nama dan versi sama)
+    const res2 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_REGIONAL',
+        version: '1.0.0',
+        description: 'Test pack for regional government',
+        reason: 'Test: create regional pack'
+      });
+
+    // HARUS BERHASIL karena regime berbeda
+    expect(res2.status).toBe(201);
+    expect(res2.body.id).toBeDefined();
+    expect(res2.body.id).not.toBe(res1.body.id);
+    createdPackIds.push(res2.body.id);
+
+    // Verifikasi di database
+    const packs = await testDb.query.policyPacks.findMany({
+      where: eq(policyPacks.packName, 'TEST-CROSS-REGIME')
+    });
+    expect(packs.length).toBe(2);
+  });
+
+  // ============================================
+  // TEST 2: Nama + Regime + Versi Sama → DITOLAK 409
+  // ============================================
+  it('should reject duplicate name, regime, and version with 409', async () => {
+    // Buat pack pertama
+    const res1 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        description: 'First pack',
+        reason: 'Test: create first pack'
+      });
+
+    expect(res1.status).toBe(201);
+    createdPackIds.push(res1.body.id);
+
+    // Coba buat pack kedua dengan nama, regime, dan versi yang sama
+    const res2 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        description: 'Duplicate pack',
+        reason: 'Test: try duplicate'
+      });
+
+    // HARUS DITOLAK dengan 409 Conflict
+    expect(res2.status).toBe(409);
+    expect(res2.body.error).toBeDefined();
+    
+    // Pesan error harus jelas, bukan pesan database mentah
+    expect(res2.body.error).not.toContain('duplicate key value violates unique constraint');
+    expect(res2.body.error).not.toContain('SQLSTATE');
+    expect(res2.body.error).toMatch(/sudah ada|already exists|duplikat|duplicate/i);
+  });
+
+  // ============================================
+  // TEST 3: Nama + Regime Sama, Versi Berbeda → BERHASIL
+  // ============================================
+  it('should allow same name and regime with different versions', async () => {
+    // Buat pack v1.0.0
+    const res1 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '1.0.0',
+        description: 'Version 1',
+        reason: 'Test: create v1'
+      });
+
+    expect(res1.status).toBe(201);
+    createdPackIds.push(res1.body.id);
+
+    // Buat pack v2.0.0 (nama dan regime sama)
+    const res2 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'GOVERNMENT_CENTRAL',
+        version: '2.0.0',
+        description: 'Version 2',
+        reason: 'Test: create v2'
+      });
+
+    // HARUS BERHASIL karena versi berbeda
+    expect(res2.status).toBe(201);
+    expect(res2.body.id).toBeDefined();
+    createdPackIds.push(res2.body.id);
+  });
+
+  // ============================================
+  // TEST 4: Tiga Regime Sekaligus
+  // ============================================
+  it('should allow same name and version across three different regimes', async () => {
+    const regimes = ['GOVERNMENT_CENTRAL', 'GOVERNMENT_REGIONAL', 'BUMN'];
+    const ids: string[] = [];
+
+    for (const regime of regimes) {
+      const res = await request(app)
+        .post('/api/admin/policy-packs')
+        .set(testAuthHeader(TEST_USERS.ADMIN))
+        .send({
+          packName: 'TEST-CROSS-REGIME',
+          regimeType: regime,
+          version: '1.0.0',
+          description: `Test pack for ${regime}`,
+          reason: `Test: create ${regime} pack`
+        });
+
+      expect(res.status).toBe(201);
+      ids.push(res.body.id);
+    }
+
+    createdPackIds.push(...ids);
+
+    // Verifikasi semua pack ada
+    const packs = await testDb.query.policyPacks.findMany({
+      where: eq(policyPacks.packName, 'TEST-CROSS-REGIME')
+    });
+    expect(packs.length).toBe(3);
+  });
+
+  // ============================================
+  // TEST 5: Pesan Error Tidak Membocorkan Detail Database
+  // ============================================
+  it('should return user-friendly error message, not raw database error', async () => {
+    // Buat pack pertama
+    const res1 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'VILLAGE',
+        version: '1.0.0',
+        description: 'Village pack',
+        reason: 'Test: create village pack'
+      });
+
+    expect(res1.status).toBe(201);
+    createdPackIds.push(res1.body.id);
+
+    // Coba duplikat
+    const res2 = await request(app)
+      .post('/api/admin/policy-packs')
+      .set(testAuthHeader(TEST_USERS.ADMIN))
+      .send({
+        packName: 'TEST-CROSS-REGIME',
+        regimeType: 'VILLAGE',
+        version: '1.0.0',
+        description: 'Duplicate',
+        reason: 'Test: try duplicate'
+      });
+
+    expect(res2.status).toBe(409);
+    
+    // Pesan harus informatif
+    const errorMsg = res2.body.error.toLowerCase();
+    expect(errorMsg).toContain('policy pack');
+    
+    // Pesan TIDAK boleh membocorkan detail internal
+    expect(errorMsg).not.toContain('pg_catalog');
+    expect(errorMsg).not.toContain('policy_pack_version_unique');
+    expect(errorMsg).not.toContain('key (pack_name, regime_type, version)=');
+  });
+});
+```
+
+---
+
+## 🔧 HANDLER ERROR MAPPING (Referensi Implementasi)
+
+Untuk memastikan test di atas PASS, handler di `legal-admin.ts` harus memetakan error constraint database ke response 409 yang jelas:
+
+```typescript
+// artifacts/api-server/src/routes/legal-admin.ts
+import { PostgresError } from 'postgres';
+
+app.post('/api/admin/policy-packs', async (req, res) => {
+  try {
+    const { packName, regimeType, version, description, reason } = req.body;
+    
+    // Validasi input
+    if (!packName || !regimeType || !version) {
+      return res.status(400).json({ 
+        error: 'packName, regimeType, and version are required' 
+      });
+    }
+
+    const [pack] = await db.insert(policyPacks).values({
+      packName,
+      regimeType,
+      version,
+      description,
+      status: 'DRAFT'
+    }).returning();
+
+    return res.status(201).json(pack);
+  } catch (error) {
+    // Map constraint violation ke 409
+    if (isUniqueConstraintError(error, 'policy_pack_version_unique')) {
+      return res.status(409).json({
+        error: `Policy pack dengan nama "${req.body.packName}", regime "${req.body.regimeType}", dan versi "${req.body.version}" sudah ada. Gunakan versi baru untuk membuat pack yang berbeda.`
+      });
+    }
+    
+    // Error lain
+    console.error('Failed to create policy pack:', error);
+    return res.status(500).json({ 
+      error: 'Gagal membuat policy pack' 
+    });
+  }
+});
+
+function isUniqueConstraintError(error: any, constraintName: string): boolean {
+  // PostgreSQL error code 23505 = unique_violation
+  if (error?.code === '23505') {
+    return true;
+  }
+  // Drizzle/Postgres.js format
+  if (error?.message?.includes('duplicate key') && 
+      error?.message?.includes(constraintName)) {
+    return true;
+  }
+  return false;
+}
+```
+
+---
+
+## 📋 CHECKLIST SELESAI
+
+- [ ] Test file dibuat di `artifacts/api-server/src/tests/policy-pack-unique-constraint.test.ts`
+- [ ] Database test terisolasi digunakan (`TEST_DATABASE_URL`)
+- [ ] testDb di-inject ke aplikasi (`app.set('db', testDb)`)
+- [ ] Test: nama + versi sama, regime berbeda → 201 (berhasil)
+- [ ] Test: nama + regime + versi sama → 409 (ditolak)
+- [ ] Test: nama + regime sama, versi berbeda → 201 (berhasil)
+- [ ] Test: tiga regime sekaligus → semua 201
+- [ ] Test: pesan error user-friendly, bukan raw database error
+- [ ] Cleanup data setelah setiap test dan setelah suite
+- [ ] Mock Clerk auth digunakan (`X-Test-User-Id`)
+- [ ] Semua test PASS
+- [ ] Typecheck lulus
+
+---
+
+## ⚠️ INVARIANT YANG DIJAGA
+
+1. **Constraint tiga kolom**: `UNIQUE(packName, regimeType, version)`, bukan `UNIQUE(packName, version)`
+2. **Error mapping**: 409 dengan pesan jelas, bukan 500 dengan pesan database mentah
+3. **Fixture fiktif**: `TEST-CROSS-REGIME`, bukan nama pack produksi
+4. **Data bersih**: Cleanup setelah test, tidak ada sisa data
+5. **Auth aman**: Mock Clerk hanya di `NODE_ENV=test`
+
+---
+
+## 🚀 CARA MENJALANKAN TEST
+
+```bash
+cd artifacts/api-server
+
+# Pastikan TEST_DATABASE_URL tersedia
+export TEST_DATABASE_URL="postgresql://user:pass@localhost:5432/procurement_test"
+
+# Jalankan test ini saja
+npm test -- policy-pack-unique-constraint.test.ts
+
+# Jalankan semua test
+npm test
+```
+
+---
+
+## 📊 STATUS
+
+- ✅ Task #17 sedang berjalan tanpa interferensi
+- ✅ Workflow stabil
+- ✅ Panduan test siap diimplementasikan
+
+Silakan lanjutkan Task #17. Jika constraint database aktual berbeda dari `policy_pack_version_unique`, atau jika handler error mapping sudah ada dengan format berbeda, saya siap membantu menyesuaikan test agar sesuai.

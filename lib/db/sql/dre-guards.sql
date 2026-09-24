@@ -118,8 +118,12 @@ BEGIN
          OR (OLD.status = 'REVIEWED' AND NEW.status = 'PUBLISHED')
          OR (OLD.status = 'PUBLISHED' AND NEW.status = 'RETIRED')
        ) THEN
-      RAISE EXCEPTION 'Invalid policy pack status transition from % to %',
-        OLD.status, NEW.status;
+      RAISE EXCEPTION USING
+        ERRCODE = 'P2001',
+        MESSAGE = format(
+          'Invalid policy pack status transition from %s to %s',
+          OLD.status, NEW.status
+        );
     END IF;
 
     IF OLD.status = 'PUBLISHED' THEN

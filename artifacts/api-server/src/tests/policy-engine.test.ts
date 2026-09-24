@@ -12,11 +12,11 @@ import {
 
 async function expectDatabaseRejection(
   query: () => Promise<unknown>,
-  message: RegExp,
+  expected: RegExp | { code: string },
 ) {
   await client.query("SAVEPOINT expected_rejection");
   try {
-    await assert.rejects(query, message);
+    await assert.rejects(query, expected);
   } finally {
     await client.query("ROLLBACK TO SAVEPOINT expected_rejection");
     await client.query("RELEASE SAVEPOINT expected_rejection");
@@ -90,8 +90,13 @@ try {
         "UPDATE policy_packs SET status = 'PUBLISHED' WHERE id = $1",
         [pack.rows[0].id],
       ),
-    /Invalid policy pack status transition from DRAFT to PUBLISHED/,
+    { code: "P2001" },
   );
+  const draftStatus = await client.query<{ status: string }>(
+    "SELECT status FROM policy_packs WHERE id = $1",
+    [pack.rows[0].id],
+  );
+  assert.equal(draftStatus.rows[0].status, "DRAFT");
 
   const content: Omit<RuleSnapshot, "hash"> = {
     rule: {
@@ -154,8 +159,13 @@ try {
         "UPDATE policy_packs SET status = 'DRAFT' WHERE id = $1",
         [pack.rows[0].id],
       ),
-    /Invalid policy pack status transition from REVIEWED to DRAFT/,
+    { code: "P2001" },
   );
+  const reviewedStatus = await client.query<{ status: string }>(
+    "SELECT status FROM policy_packs WHERE id = $1",
+    [pack.rows[0].id],
+  );
+  assert.equal(reviewedStatus.rows[0].status, "REVIEWED");
 
   await client.query(
     "UPDATE legal_sources SET verification_status = 'PENDING' WHERE id = $1",
@@ -198,8 +208,13 @@ try {
         "UPDATE policy_packs SET status = 'REVIEWED' WHERE id = $1",
         [pack.rows[0].id],
       ),
-    /Invalid policy pack status transition from PUBLISHED to REVIEWED/,
+    { code: "P2001" },
   );
+  const publishedStatus = await client.query<{ status: string }>(
+    "SELECT status FROM policy_packs WHERE id = $1",
+    [pack.rows[0].id],
+  );
+  assert.equal(publishedStatus.rows[0].status, "PUBLISHED");
   await expectDatabaseRejection(
     () =>
       client.query(

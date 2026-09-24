@@ -9,7 +9,7 @@ const decisionReference = "11111111-1111-4111-8111-111111111111";
 const activities: ActivityItem[] = [
   {
     id: "decision-1",
-    actor: "SYSTEM",
+    actor: "Sari Wijaya",
     action: "mengevaluasi kepatuhan",
     target: "Paket #41",
     timestamp: "2026-09-20T12:00:00.000Z",
@@ -48,6 +48,7 @@ describe("Activity", () => {
     render(<Activity />);
 
     expect(screen.getByText(decisionReference)).toBeVisible();
+    expect(screen.getByText("Sari Wijaya")).toBeVisible();
     expect(screen.getByRole("link", { name: /buka keputusan/i })).toHaveAttribute(
       "href",
       `/packages/41?decisionReference=${decisionReference}`,

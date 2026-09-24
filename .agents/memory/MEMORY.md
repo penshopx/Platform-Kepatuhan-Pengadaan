@@ -1,1 +1,2 @@
 - [Legal rule authority](legal-rule-authority.md) — classify rules by source authority and never hard-code local thresholds from presentation examples.
+- [Audit identity history](audit-identity-history.md) — keep the evaluator's display name as it was at decision time, not only a live profile lookup.

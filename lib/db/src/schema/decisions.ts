@@ -33,6 +33,7 @@ export const decisionReferencesTable = pgTable(
       .notNull()
       .defaultNow(),
     evaluatedBy: text("evaluated_by"),
+    evaluatorName: text("evaluator_name"),
     actorType: varchar("actor_type", { length: 20 })
       .notNull()
       .default("SYSTEM"),

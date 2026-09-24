@@ -28,6 +28,7 @@ import {
   UpdatePackageParams,
   UpdatePackageResponse,
 } from "@workspace/api-zod";
+import { decisionEvaluatorLabel } from "../lib/decision-evaluator-label";
 
 const router: IRouter = Router();
 
@@ -310,6 +311,7 @@ router.get("/activity", async (_req, res): Promise<void> => {
         entityId: decisionReferencesTable.entityId,
         evaluatedAt: decisionReferencesTable.evaluatedAt,
         evaluatedBy: decisionReferencesTable.evaluatedBy,
+        evaluatorName: decisionReferencesTable.evaluatorName,
         actorType: decisionReferencesTable.actorType,
         evaluationResult: decisionReferencesTable.evaluationResult,
       })
@@ -331,7 +333,7 @@ router.get("/activity", async (_req, res): Promise<void> => {
 
       return [{
         id: `decision-${decision.id}`,
-        actor: decision.evaluatedBy ?? decision.actorType,
+        actor: decisionEvaluatorLabel(decision),
         action: "mengevaluasi kepatuhan",
         target: `Paket #${packageId}`,
         timestamp: iso(decision.evaluatedAt),

@@ -3,6 +3,8 @@ import { createServer, type Server } from "node:http";
 import express from "express";
 import type { db as productionDb } from "@workspace/db";
 import { createPolicyEngineRouter } from "../routes/policy-engine";
+import { decisionEvaluatorLabel } from "../lib/decision-evaluator-label";
+import type { EvaluationActor } from "../lib/evaluation-actor";
 
 type StoredDecisionRow = {
   id: string;
@@ -128,10 +130,11 @@ function fakeDatabase(results: StoredDecisionRow[][]) {
 async function withServer(
   database: typeof productionDb,
   run: (baseUrl: string) => Promise<void>,
+  getEvaluator?: () => Promise<EvaluationActor | null>,
 ) {
   const app = express();
   app.use(express.json());
-  app.use("/api", createPolicyEngineRouter(database));
+  app.use("/api", createPolicyEngineRouter(database, getEvaluator));
   const server: Server = createServer(app);
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -198,5 +201,73 @@ await withServer(database, async (baseUrl) => {
   );
   assert.equal(getInsertCount(), 0);
 });
+
+assert.equal(decisionEvaluatorLabel({
+  evaluatorName: " Sari Wijaya ",
+  evaluatedBy: "user-123",
+}), "Sari Wijaya");
+assert.equal(decisionEvaluatorLabel({
+  evaluatorName: null,
+  evaluatedBy: "user-123",
+}), "Pengguna user-123");
+assert.equal(decisionEvaluatorLabel({
+  evaluatorName: null,
+  evaluatedBy: null,
+}), "Evaluator tidak diketahui (data lama)");
+
+const evaluationInput = {
+  entityType: "PROCUREMENT_PACKAGE",
+  entityId: "42",
+  policyPackId,
+  context: { evaluationDate: "2026-09-20" },
+};
+const inserted: Array<Record<string, unknown>> = [];
+let queryNumber = 0;
+const evaluationDatabase = {
+  transaction: async (run: (tx: unknown) => Promise<unknown>) => run(evaluationDatabase),
+  select() {
+    const rows = queryNumber++ % 2 === 0
+      ? [{ id: policyPackId, packName: "Paket kebijakan pengadaan", version: "2.1.0" }]
+      : [];
+    const query = {
+      from() { return query; },
+      where() { return Promise.resolve(rows); },
+    };
+    return query;
+  },
+  insert() {
+    return {
+      values(values: Record<string, unknown>) {
+        inserted.push(values);
+        return {
+          returning: async () => [{ id: decisionIds.latest }],
+        };
+      },
+    };
+  },
+} as unknown as typeof productionDb;
+
+await withServer(evaluationDatabase, async (baseUrl) => {
+  const response = await fetch(`${baseUrl}/rule-evaluations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(evaluationInput),
+  });
+  assert.equal(response.status, 401);
+  assert.equal(inserted.length, 0);
+}, async () => null);
+
+await withServer(evaluationDatabase, async (baseUrl) => {
+  const response = await fetch(`${baseUrl}/rule-evaluations`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(evaluationInput),
+  });
+  assert.equal(response.status, 201);
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].evaluatedBy, "user-123");
+  assert.equal(inserted[0].evaluatorName, "Sari Wijaya");
+  assert.equal(inserted[0].actorType, "USER");
+}, async () => ({ id: "user-123", name: "Sari Wijaya" }));
 
 console.log("Decision route HTTP integration tests passed");

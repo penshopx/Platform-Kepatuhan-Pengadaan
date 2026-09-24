@@ -30,6 +30,7 @@ import {
   unverifiedSourcePublicationError,
 } from "../lib/policy-engine";
 import { authenticateSignedActor } from "../lib/signed-actor";
+import { resolveEvaluationActor, type EvaluationActor } from "../lib/evaluation-actor";
 
 type StoredDecisionSnapshot = {
   policyPack: unknown;
@@ -40,7 +41,10 @@ type StoredDecisionSnapshot = {
   };
 };
 
-export function createPolicyEngineRouter(database: typeof db = db): IRouter {
+export function createPolicyEngineRouter(
+  database: typeof db = db,
+  getEvaluator: (req: Parameters<typeof resolveEvaluationActor>[0]) => Promise<EvaluationActor | null> = resolveEvaluationActor,
+): IRouter {
 const router: IRouter = Router();
 
 function presentStoredDecision(decision: {
@@ -307,6 +311,19 @@ router.post("/rule-evaluations", async (req, res): Promise<void> => {
     return;
   }
 
+  let evaluator: EvaluationActor | null;
+  try {
+    evaluator = await getEvaluator(req);
+  } catch (error) {
+    req.log?.error({ error }, "Unable to verify evaluator identity");
+    res.status(503).json({ error: "Identitas evaluator tidak dapat diverifikasi" });
+    return;
+  }
+  if (!evaluator) {
+    res.status(401).json({ error: "Masuk untuk menjalankan evaluasi" });
+    return;
+  }
+
   try {
     const result = await database.transaction(async (tx) => {
       const [pack] = await tx
@@ -377,7 +394,9 @@ router.post("/rule-evaluations", async (req, res): Promise<void> => {
           evaluationResult: output,
           snapshot,
           evaluatorVersion: EVALUATOR_VERSION,
-          actorType: "SYSTEM",
+          evaluatedBy: evaluator.id,
+          evaluatorName: evaluator.name,
+          actorType: "USER",
         })
         .returning({ id: decisionReferencesTable.id });
       return {

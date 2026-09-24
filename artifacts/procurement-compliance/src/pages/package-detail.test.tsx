@@ -13,6 +13,7 @@ import PackageDetail from "./package-detail";
 
 const state = vi.hoisted(() => ({
   publishedPacks: [] as PublishedPolicyPack[],
+  publishedPacksLoading: false,
   publishedPacksError: false,
   evaluationResult: null as RuleEvaluationResult | null,
   evaluationError: null as (Error & { data?: { error?: string } }) | null,
@@ -37,7 +38,7 @@ vi.mock("@workspace/api-client-react", async () => {
     useUpdatePackage: () => ({ mutate: vi.fn(), isPending: false }),
     useListPublishedPolicyPacks: () => ({
       data: state.publishedPacks,
-      isLoading: false,
+      isLoading: state.publishedPacksLoading,
       isError: state.publishedPacksError,
     }),
     getGetDecisionQueryKey: (reference: string) => ["decisions", reference],
@@ -183,6 +184,7 @@ function renderPage() {
 describe("detail paket: evaluasi kepatuhan", () => {
   beforeEach(() => {
     state.publishedPacks = [];
+    state.publishedPacksLoading = false;
     state.publishedPacksError = false;
     state.evaluationResult = null;
     state.evaluationError = null;
@@ -248,6 +250,18 @@ describe("detail paket: evaluasi kepatuhan", () => {
     expect(screen.getByTestId("status-no-published-policy-pack")).toHaveTextContent(
       "Policy pack terpublikasi belum tersedia",
     );
+    expect(screen.queryByTestId("button-evaluate-compliance")).not.toBeInTheDocument();
+  });
+
+  it("menahan pilihan dan evaluasi saat daftar policy pack masih dimuat", () => {
+    state.publishedPacksLoading = true;
+
+    renderPage();
+
+    expect(screen.getByTestId("status-policy-packs-loading")).toHaveTextContent(
+      "Memuat policy pack terpublikasi...",
+    );
+    expect(screen.queryByTestId("select-policy-pack")).not.toBeInTheDocument();
     expect(screen.queryByTestId("button-evaluate-compliance")).not.toBeInTheDocument();
   });
 

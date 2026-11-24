@@ -20,7 +20,7 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
-  Activity,
+  ActivityPage,
   BusinessRule,
   BusinessRuleInput,
   ComparePolicyPacksParams,
@@ -30,6 +30,7 @@ import type {
   LegalSource,
   LegalSourceInput,
   LegalSourceUpdate,
+  ListActivityParams,
   ListDecisionsParams,
   ListPackagesParams,
   PackageInput,
@@ -813,20 +814,27 @@ export const useCompleteEpurchasingReview = <TError = ErrorType<unknown>,
       return useMutation(getCompleteEpurchasingReviewMutationOptions(options));
     }
 
-export const getListActivityUrl = () => {
+export const getListActivityUrl = (params?: ListActivityParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/activity`
+  return stringifiedParams.length > 0 ? `/api/activity?${stringifiedParams}` : `/api/activity`
 }
 
 /**
- * @summary List recent workspace activity
+ * @summary List workspace activity in reverse chronological pages
  */
-export const listActivity = async ( options?: Parameters<typeof customFetch>[1]): Promise<Activity[]> => {
+export const listActivity = async (params?: ListActivityParams, options?: Parameters<typeof customFetch>[1]): Promise<ActivityPage> => {
 
-  return customFetch<Activity[]>(getListActivityUrl(),
+  return customFetch<ActivityPage>(getListActivityUrl(params),
   {
     ...options,
     method: 'GET'
@@ -839,23 +847,23 @@ export const listActivity = async ( options?: Parameters<typeof customFetch>[1])
 
 
 
-export const getListActivityQueryKey = () => {
+export const getListActivityQueryKey = (params?: ListActivityParams,) => {
     return [
-    `/api/activity`
+    `/api/activity`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getListActivityQueryOptions = <TData = Awaited<ReturnType<typeof listActivity>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActivity>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getListActivityQueryOptions = <TData = Awaited<ReturnType<typeof listActivity>>, TError = ErrorType<void>>(params?: ListActivityParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActivity>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getListActivityQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getListActivityQueryKey(params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof listActivity>>> = ({ signal }) => listActivity({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listActivity>>> = ({ signal }) => listActivity(params, { signal, ...requestOptions });
 
 
 
@@ -865,19 +873,19 @@ const {query: queryOptions, request: requestOptions} = options ?? {};
 }
 
 export type ListActivityQueryResult = NonNullable<Awaited<ReturnType<typeof listActivity>>>
-export type ListActivityQueryError = ErrorType<unknown>
+export type ListActivityQueryError = ErrorType<void>
 
 
 /**
- * @summary List recent workspace activity
+ * @summary List workspace activity in reverse chronological pages
  */
 
-export function useListActivity<TData = Awaited<ReturnType<typeof listActivity>>, TError = ErrorType<unknown>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActivity>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export function useListActivity<TData = Awaited<ReturnType<typeof listActivity>>, TError = ErrorType<void>>(
+ params?: ListActivityParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listActivity>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
-  const queryOptions = getListActivityQueryOptions(options)
+  const queryOptions = getListActivityQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

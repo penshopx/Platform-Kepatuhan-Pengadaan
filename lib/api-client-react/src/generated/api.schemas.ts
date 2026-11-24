@@ -123,6 +123,12 @@ export interface Activity {
   packageId?: number;
 }
 
+export interface ActivityPage {
+  items: Activity[];
+  page: number;
+  hasMore: boolean;
+}
+
 export interface Provision {
   id: string;
   articleNumber: string;
@@ -587,6 +593,14 @@ export type ActorTimestampParameter = string;
 export type ListPackagesParams = {
 status?: string;
 search?: string;
+};
+
+export type ListActivityParams = {
+/**
+ * One-based page number; each page contains up to 20 events.
+ * @minimum 1
+ */
+page?: number;
 };
 
 export type ComparePolicyPacksParams = {

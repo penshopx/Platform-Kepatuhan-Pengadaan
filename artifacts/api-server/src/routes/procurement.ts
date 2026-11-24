@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { and, desc, eq, ilike } from "drizzle-orm";
+import { and, desc, eq, ilike, sql } from "drizzle-orm";
 import {
   activitiesTable,
   db,
@@ -19,6 +19,7 @@ import {
   GetDashboardResponse,
   GetPackageParams,
   GetPackageResponse,
+  ListActivityQueryParams,
   ListActivityResponse,
   ListEpurchasingReviewsResponse,
   ListPackagesQueryParams,
@@ -298,13 +299,23 @@ router.post(
   },
 );
 
-router.get("/activity", async (_req, res): Promise<void> => {
+router.get("/activity", async (req, res): Promise<void> => {
+  const parsed = ListActivityQueryParams.safeParse(req.query);
+  if (!parsed.success || parsed.data.page > Math.floor((2_147_483_647 - 1) / 20)) {
+    res.status(400).json({ error: "Nomor halaman tidak valid" });
+    return;
+  }
+  const { page } = parsed.data;
+  const pageSize = 20;
+  // Each source can contribute every event on the requested page. Fetch one
+  // extra candidate to determine whether another merged page exists.
+  const candidateLimit = page * pageSize + 1;
   const [rows, decisions] = await Promise.all([
     db
       .select()
       .from(activitiesTable)
-      .orderBy(desc(activitiesTable.timestamp))
-      .limit(20),
+      .orderBy(desc(activitiesTable.timestamp), desc(activitiesTable.id))
+      .limit(candidateLimit),
     db
       .select({
         id: decisionReferencesTable.id,
@@ -316,9 +327,12 @@ router.get("/activity", async (_req, res): Promise<void> => {
         evaluationResult: decisionReferencesTable.evaluationResult,
       })
       .from(decisionReferencesTable)
-      .where(eq(decisionReferencesTable.entityType, "PROCUREMENT_PACKAGE"))
-      .orderBy(desc(decisionReferencesTable.evaluatedAt))
-      .limit(20),
+      .where(and(
+        eq(decisionReferencesTable.entityType, "PROCUREMENT_PACKAGE"),
+        sql`${decisionReferencesTable.entityId} ~ '^[1-9][0-9]{0,14}$'`,
+      ))
+      .orderBy(desc(decisionReferencesTable.evaluatedAt), desc(decisionReferencesTable.id))
+      .limit(candidateLimit),
   ]);
 
   const activity = [
@@ -348,11 +362,23 @@ router.get("/activity", async (_req, res): Promise<void> => {
       }];
     }),
   ]
-    .sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp))
-    .slice(0, 20);
+    .sort((left, right) => {
+      const byTime = Date.parse(right.timestamp) - Date.parse(left.timestamp);
+      if (byTime) return byTime;
+      const leftDecision = left.id.startsWith("decision-");
+      const rightDecision = right.id.startsWith("decision-");
+      if (leftDecision !== rightDecision) return leftDecision ? -1 : 1;
+      return leftDecision
+        ? right.id.localeCompare(left.id)
+        : Number(right.id.slice(9)) - Number(left.id.slice(9));
+    });
 
   res.json(
-    ListActivityResponse.parse(activity),
+    ListActivityResponse.parse({
+      items: activity.slice((page - 1) * pageSize, page * pageSize),
+      page,
+      hasMore: activity.length > page * pageSize,
+    }),
   );
 });
 

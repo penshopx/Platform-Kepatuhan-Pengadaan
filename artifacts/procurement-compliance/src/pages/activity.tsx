@@ -2,9 +2,11 @@ import { useListActivity } from "@workspace/api-client-react";
 import { ActivitySquare, FileEdit, CheckSquare, PlusCircle, AlertTriangle, ArrowRight } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Link } from "wouter";
+import { useState } from "react";
 
 export default function Activity() {
-  const { data: activities, isLoading, isError } = useListActivity();
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError, isFetching } = useListActivity({ page });
 
   const getIcon = (action: string) => {
     switch(action.toLowerCase()) {
@@ -38,8 +40,12 @@ export default function Activity() {
           Aktivitas gagal dimuat.
         </div>
       ) : (
+        <>
+        {data?.items.length === 0 && (
+          <p className="text-center text-muted-foreground">Tidak ada aktivitas pada halaman ini.</p>
+        )}
         <div className="relative before:absolute before:inset-0 before:ml-6 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-border">
-          {activities?.map((activity, index) => (
+          {data?.items.map((activity) => (
             <div key={activity.id} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group mb-8 last:mb-0">
               {/* Timeline dot */}
               <div className="flex items-center justify-center w-12 h-12 rounded-full border-4 border-background bg-card shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow-sm z-10">
@@ -88,7 +94,17 @@ export default function Activity() {
             </div>
           ))}
         </div>
+        </>
       )}
+      <nav aria-label="Halaman riwayat aktivitas" className="flex items-center justify-center gap-4">
+        <button type="button" className="rounded-md border border-border px-4 py-2 text-sm font-medium disabled:opacity-50" disabled={page === 1 || isFetching} onClick={() => setPage((current) => current - 1)}>
+          Lebih baru
+        </button>
+        <span className="text-sm text-muted-foreground">Halaman {page}</span>
+        <button type="button" className="rounded-md border border-border px-4 py-2 text-sm font-medium disabled:opacity-50" disabled={!data?.hasMore || isFetching || isError} onClick={() => setPage((current) => current + 1)}>
+          Lebih lama
+        </button>
+      </nav>
     </div>
   );
 }

@@ -222,9 +222,18 @@ export const CompleteEpurchasingReviewResponse = zod.object({
 
 
 /**
- * @summary List recent workspace activity
+ * @summary List workspace activity in reverse chronological pages
  */
-export const ListActivityResponseItem = zod.object({
+export const listActivityQueryPageDefault = 1;
+
+
+
+export const ListActivityQueryParams = zod.object({
+  "page": zod.coerce.number().int().min(1).default(listActivityQueryPageDefault).describe('One-based page number; each page contains up to 20 events.')
+})
+
+export const ListActivityResponse = zod.object({
+  "items": zod.array(zod.object({
   "id": zod.string(),
   "actor": zod.string(),
   "action": zod.string(),
@@ -233,8 +242,10 @@ export const ListActivityResponseItem = zod.object({
   "tone": zod.string(),
   "decisionReference": zod.string().uuid().optional(),
   "packageId": zod.number().int().optional()
+})),
+  "page": zod.number().int(),
+  "hasMore": zod.boolean()
 })
-export const ListActivityResponse = zod.array(ListActivityResponseItem)
 
 
 /**

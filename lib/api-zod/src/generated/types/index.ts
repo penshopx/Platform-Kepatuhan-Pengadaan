@@ -7,6 +7,7 @@
  */
 
 export * from './activity';
+export * from './activityPage';
 export * from './actorIdParameter';
 export * from './actorRoleParameter';
 export * from './actorTimestampParameter';
@@ -30,6 +31,7 @@ export * from './legalSourceInput';
 export * from './legalSourceUpdate';
 export * from './legalSourceUpdateVerificationStatus';
 export * from './legalSourceVerificationStatus';
+export * from './listActivityParams';
 export * from './listDecisionsParams';
 export * from './listPackagesParams';
 export * from './packageDocument';

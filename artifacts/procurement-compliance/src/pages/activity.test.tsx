@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import type { Activity as ActivityItem } from "@workspace/api-client-react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import Activity from "./activity";
 
 const decisionReference = "11111111-1111-4111-8111-111111111111";
@@ -36,17 +37,26 @@ vi.mock("wouter", () => ({
 }));
 
 vi.mock("@workspace/api-client-react", () => ({
-  useListActivity: () => ({
-    data: activities,
+  useListActivity: ({ page }: { page: number }) => ({
+    data: {
+      items: page === 1 ? [activities[1]] : [activities[0]],
+      page,
+      hasMore: page === 1,
+    },
     isLoading: false,
     isError: false,
+    isFetching: false,
   }),
 }));
 
 describe("Activity", () => {
-  it("menautkan hanya aktivitas evaluasi yang memiliki decision reference", () => {
+  it("membuka keputusan yang muncul di halaman riwayat berikutnya", async () => {
+    const user = userEvent.setup();
     render(<Activity />);
 
+    expect(screen.queryByRole("link", { name: /buka keputusan/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Lebih lama" }));
+    expect(screen.getByText("Halaman 2")).toBeVisible();
     expect(screen.getByText(decisionReference)).toBeVisible();
     expect(screen.getByText("Sari Wijaya")).toBeVisible();
     expect(screen.getByRole("link", { name: /buka keputusan/i })).toHaveAttribute(
@@ -54,5 +64,8 @@ describe("Activity", () => {
       `/packages/41?decisionReference=${decisionReference}`,
     );
     expect(screen.getAllByRole("link", { name: /buka keputusan/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Lebih lama" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Lebih baru" }));
+    expect(screen.queryByRole("link", { name: /buka keputusan/i })).not.toBeInTheDocument();
   });
 });

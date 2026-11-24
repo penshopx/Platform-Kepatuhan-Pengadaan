@@ -177,16 +177,24 @@ paths:
     get:
       operationId: listActivity
       tags: [activity]
-      summary: List recent workspace activity
+      summary: List workspace activity in reverse chronological pages
+      parameters:
+        - name: page
+          in: query
+          description: One-based page number; each page contains up to 20 events.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
       responses:
         "200":
-          description: Recent activity
+          description: Activity page
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Activity"
+                $ref: "#/components/schemas/ActivityPage"
+        "400":
+          description: Invalid page number
   /legal-sources:
     get:
       operationId: listLegalSources
@@ -814,6 +822,18 @@ components:
           format: uuid
         packageId:
           type: integer
+    ActivityPage:
+      type: object
+      required: [items, page, hasMore]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Activity"
+        page:
+          type: integer
+        hasMore:
+          type: boolean
     Provision:
       type: object
       required: [id, articleNumber, provisionType, rawText, sourceCategory]
